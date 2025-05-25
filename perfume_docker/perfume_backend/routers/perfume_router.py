@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
-from perfume_backend.schemas.base import BaseResponse
+from ..schemas.base import BaseResponse  # ✅ 상대경로로 수정
 import pandas as pd
 import os
 
