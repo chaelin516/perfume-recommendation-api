@@ -3,14 +3,14 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
 
-# 각 기능별 라우터 임포트
-from perfume_backend.routers.perfume_router import router as perfume_router
-from perfume_backend.routers.store_router import router as store_router
-from perfume_backend.routers.course_router import router as course_router
-from perfume_backend.routers.recommend_router import router as recommend_router
-from perfume_backend.routers.diary_router import router as diary_router
-from perfume_backend.routers.auth_router import router as auth_router  # ✅ Firebase 인증 라우터 추가
-from perfume_backend.routers.recommendation_save_router import router as recommendation_save_router
+# 각 기능별 라우터 임포트 (경로 수정 완료)
+from routers.perfume_router import router as perfume_router
+from routers.store_router import router as store_router
+from routers.course_router import router as course_router
+from routers.recommend_router import router as recommend_router
+from routers.diary_router import router as diary_router
+from routers.auth_router import router as auth_router  # ✅ Firebase 인증 라우터 추가
+from routers.recommendation_save_router import router as recommendation_save_router
 
 # ✅ FastAPI 인스턴스 정의 (Swagger용 정보 포함)
 app = FastAPI(
