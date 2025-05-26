@@ -1,13 +1,16 @@
+# ✅ 핵심 AI 라이브러리
 tensorflow==2.13.0
-h5py
 numpy==1.24.3
 scikit-learn==1.6.1
 pandas==2.2.3
+h5py==3.10.0       # ← 명시적 고정 추가
 
-fastapi
-uvicorn[standard]
-python-multipart
-python-dotenv
+# ✅ 백엔드 FastAPI 관련
+fastapi==0.95.2
+uvicorn[standard]==0.23.2
+python-multipart==0.0.9
+python-dotenv==1.0.0
 
-sqlalchemy
-sqlmodel
+# ✅ DB 연동
+sqlalchemy==2.0.21
+sqlmodel==0.0.8
