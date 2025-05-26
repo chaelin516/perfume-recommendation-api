@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Query, HTTPException
-schemas.base import BaseResponse
+from schemas.base import BaseResponse
 import json, os
 import pandas as pd
 

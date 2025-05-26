@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends
 from sqlmodel import Session
-db.session import get_session
-models.recommendation import RecommendedPerfume
-schemas.recommendation import SaveRecommendationsRequest
+from db.session import get_session
+from models.recommendation import RecommendedPerfume
+from schemas.recommendation import SaveRecommendationsRequest
 from fastapi.responses import JSONResponse
 from datetime import datetime
 

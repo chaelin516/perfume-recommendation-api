@@ -3,7 +3,7 @@
 from fastapi import APIRouter, HTTPException, Header
 from fastapi.responses import JSONResponse
 from firebase_admin import auth
-schemas.common import BaseResponse
+from schemas.common import BaseResponse
 import firebase_admin
 
 router = APIRouter(prefix="/auth", tags=["Auth"])

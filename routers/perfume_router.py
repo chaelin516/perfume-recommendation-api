@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
-schemas.base import BaseResponse
+from schemas.base import BaseResponse
 import pandas as pd
 import os
 

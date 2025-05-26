@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-schemas.course import SimpleCourseRecommendRequest
+from schemas.course import SimpleCourseRecommendRequest
 import pandas as pd
 import json, math, os
 
