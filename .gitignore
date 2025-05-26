@@ -1,0 +1,22 @@
+# ✅ Python 가상환경 폴더
+venv/
+venv_tf/
+.env/
+
+# 🐍 파이썬 캐시 및 컴파일 파일
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 📂 Jupyter Notebook 체크포인트
+.ipynb_checkpoints/
+
+# 🧪 로그 파일
+*.log
+
+# 🍏 macOS 시스템 파일
+.DS_Store
+
+# ⚙️ VSCode 설정
+.vscode/
