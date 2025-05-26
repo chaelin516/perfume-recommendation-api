@@ -14,3 +14,5 @@ python-dotenv==1.0.0
 # ✅ DB 연동 (버전 충돌 해결!)
 sqlalchemy==1.4.41
 sqlmodel==0.0.8
+
+firebase-admin
