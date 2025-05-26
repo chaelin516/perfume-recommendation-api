@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
-from perfume_backend.schemas.diary import DiaryCreateRequest, DiaryEntry
-from perfume_backend.schemas.common import BaseResponse
+schemas.diary import DiaryCreateRequest, DiaryEntry
+schemas.common import BaseResponse
 from datetime import datetime, date
 from typing import Optional
 import os, json

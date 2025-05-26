@@ -1,8 +1,8 @@
 # init_db.py
 
 from sqlmodel import SQLModel
-from perfume_backend.models.recommendation import RecommendedPerfume
-from perfume_backend.db.session import engine  # ← session.py에 있는 engine
+models.recommendation import RecommendedPerfume
+db.session import engine  # ← session.py에 있는 engine
 
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
-from perfume_backend.schemas.base import BaseResponse
+schemas.base import BaseResponse
 import pandas as pd
 import os
 

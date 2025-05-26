@@ -9,7 +9,7 @@ import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import CountVectorizer
 
-from perfume_backend.utils.model_predictor import predict_emotion_cluster
+utils.model_predictor import predict_emotion_cluster
 
 router = APIRouter(prefix="/perfumes", tags=["Perfume"])
 

@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from perfume_backend.schemas.course import SimpleCourseRecommendRequest
+schemas.course import SimpleCourseRecommendRequest
 import pandas as pd
 import json, math, os
 

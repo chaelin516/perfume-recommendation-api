@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Query, HTTPException
-from perfume_backend.schemas.base import BaseResponse
+schemas.base import BaseResponse
 import json, os
 import pandas as pd
 
