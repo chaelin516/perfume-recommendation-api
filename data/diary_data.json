@@ -1,0 +1,55 @@
+[
+  {
+    "user_id": "cho_yena",
+    "perfume_name": "Cozy Vanilla",
+    "emotion": "relaxed",
+    "memo": "따뜻하고 포근한 향기였음",
+    "created_at": "2025-05-16T02:32:09.420678"
+  },
+  {
+    "user_id": "user123",
+    "perfume_name": "Nectar Parfum",
+    "content": "이 향 너무 부드러워서 또 맡고 싶어져요",
+    "is_public": true,
+    "emotion_tags": [
+      "calm",
+      "rainyday"
+    ],
+    "created_at": "2025-05-20 02:03:25.123524"
+  },
+  {
+    "user_id": "user123",
+    "perfume_name": "Dior Sauvage",
+    "content": "상쾌하고 시원한 향이 여름에 딱이에요!",
+    "is_public": true,
+    "emotion_tags": [
+      "fresh",
+      "clean",
+      "energetic"
+    ],
+    "created_at": "2025-05-20 14:59:44.099704"
+  },
+  {
+    "user_id": "user456",
+    "perfume_name": "Jo Malone Wood Sage & Sea Salt",
+    "content": "바닷바람 같은 향기, 산책할 때 뿌리면 좋아요.",
+    "is_public": false,
+    "emotion_tags": [
+      "calm",
+      "natural"
+    ],
+    "created_at": "2025-05-20 15:03:27.887324"
+  },
+  {
+    "user_id": "user001",
+    "perfume_name": "Dior Sauvage",
+    "content": "상쾌하고 시원한 향이 여름에 딱이에요!",
+    "is_public": true,
+    "emotion_tags": [
+      "fresh",
+      "clean",
+      "energetic"
+    ],
+    "created_at": "2025-05-20 15:10:33.322661"
+  }
+]
