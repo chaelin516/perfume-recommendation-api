@@ -1,27 +1,25 @@
-# perfume_backend/generate_test_token.py
-
-import jwt
+import firebase_admin
+from firebase_admin import credentials, auth
 import datetime
+import os
 
-# Firebase 프로젝트의 발급자 (예시로 작성한 값)
-ISSUER = "test-firebase-adminsdk@example.com"
+# 경로 설정
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FIREBASE_KEY_PATH = os.path.join(BASE_DIR, "firebase_key.json")
 
-def create_test_token(uid: str = "testuser123"):
-    now = datetime.datetime.utcnow()
-    payload = {
-        "iss": ISSUER,
-        "aud": "https://identitytoolkit.googleapis.com/google.identity.identitytoolkit.v1.IdentityToolkit",
-        "iat": now,
-        "exp": now + datetime.timedelta(hours=1),
-        "uid": uid,
-        "email": f"{uid}@example.com"
-    }
+# Firebase 초기화
+if not firebase_admin._apps:
+    cred = credentials.Certificate(FIREBASE_KEY_PATH)
+    firebase_admin.initialize_app(cred)
 
-    # 개발용 시크릿 키 (실제 Firebase와는 무관한 로컬 테스트용)
-    secret = "secret-for-testing"
-    token = jwt.encode(payload, secret, algorithm="HS256")
-    return token
+# 테스트 토큰 생성
+def create_test_token():
+    user_id = "test-user-id"
+    expires_at = datetime.datetime.utcnow() + datetime.timedelta(hours=1)
+    custom_token = auth.create_custom_token(user_id)
+    return custom_token.decode()
 
 if __name__ == "__main__":
-    print("🔥 테스트용 Firebase ID 토큰:")
-    print(create_test_token())
+    token = create_test_token()
+    print("🧪 테스트용 Firebase 커스텀 토큰:\n")
+    print(token)
