@@ -1,18 +1,27 @@
-from pydantic import BaseModel
+# perfume_backend/schemas/diary.py
+
+from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import Optional, List
+from typing import List
 
-class DiaryCreateRequest(BaseModel):
-    user_id: str
-    perfume_name: str
-    content: Optional[str] = None  # ← 이 줄 반드시 있어야 함
-    is_public: bool
-    emotion_tags: Optional[List[str]] = []
+class DiaryResponse(BaseModel):
+    id: str
+    user_id: str = Field(..., alias="user_id")
+    user_name: str = Field(..., alias="user_name")
+    user_profile_image: str = Field(..., alias="user_profile_image")
+    perfume_id: str = Field(..., alias="perfume_id")
+    perfume_name: str = Field(..., alias="perfume_name")
+    brand: str
+    content: str
+    tags: List[str] = Field(..., alias="tags")
+    likes: int
+    comments: int
+    created_at: datetime = Field(..., alias="created_at")
+    updated_at: datetime = Field(..., alias="updated_at")
 
-class DiaryEntry(BaseModel):
-    user_id: str
-    perfume_name: str
-    content: Optional[str] = None
-    is_public: bool
-    emotion_tags: Optional[List[str]] = []
-    created_at: datetime
+    class Config:
+        orm_mode = True
+        allow_population_by_field_name = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
