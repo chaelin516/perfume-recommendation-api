@@ -1,9 +1,16 @@
-# perfume_backend/schemas/diary.py
-
 from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
+# ✅ 클라이언트가 시향 일기를 작성할 때 사용하는 요청 모델
+class DiaryCreateRequest(BaseModel):
+    user_id: str
+    perfume_name: str
+    content: Optional[str] = None
+    is_public: bool
+    emotion_tags: Optional[List[str]] = []
+
+# ✅ 프론트엔드에 시향 일기 결과를 응답할 때 사용하는 모델
 class DiaryResponse(BaseModel):
     id: str
     user_id: str = Field(..., alias="user_id")
