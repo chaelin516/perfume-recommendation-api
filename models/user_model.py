@@ -4,12 +4,12 @@ import firebase_admin
 from firebase_admin import credentials, auth
 from fastapi import HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from models.user_model import save_user  # ✅ 사용자 저장
 import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SERVICE_ACCOUNT_PATH = os.path.join(BASE_DIR, "../config/firebase-service-account.json")
 
+# Firebase 앱 초기화
 if not firebase_admin._apps:
     cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
     firebase_admin.initialize_app(cred)
@@ -20,6 +20,8 @@ async def verify_firebase_token(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     try:
+        from models.user_model import save_user  # 🔁 함수 내부에서 import → 순환참조 방지
+
         id_token = credentials.credentials
         decoded_token = auth.verify_id_token(id_token)
 
@@ -29,7 +31,7 @@ async def verify_firebase_token(
         picture = decoded_token.get("picture", "")
 
         # ✅ 사용자 정보 저장 (최초 로그인 시)
-        save_user(uid, email, name, picture)
+        await save_user(uid, email, name, picture)
 
         return decoded_token
     except Exception as e:
