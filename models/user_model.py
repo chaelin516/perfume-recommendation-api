@@ -1,39 +1,16 @@
-# utils/auth_utils.py
+from typing import Optional
 
-import firebase_admin
-from firebase_admin import credentials, auth
-from fastapi import HTTPException, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-import os
+# ✅ Firebase 로그인 시 최초 사용자 정보를 저장하는 함수
+# 현재는 실제 DB 저장 없이 로그 출력만 수행합니다.
+# 추후 Firestore, Supabase, PostgreSQL 등에 저장 가능
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SERVICE_ACCOUNT_PATH = os.path.join(BASE_DIR, "../config/firebase-service-account.json")
+async def save_user(uid: str, email: str, name: str, picture: Optional[str] = None):
+    print("[USER SAVE] Firebase user info received:")
+    print(f"  UID: {uid}")
+    print(f"  Email: {email}")
+    print(f"  Name: {name}")
+    print(f"  Picture: {picture}")
 
-# Firebase 앱 초기화
-if not firebase_admin._apps:
-    cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
-    firebase_admin.initialize_app(cred)
-
-security = HTTPBearer()
-
-async def verify_firebase_token(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-    try:
-        from models.user_model import save_user  # 🔁 함수 내부에서 import → 순환참조 방지
-
-        id_token = credentials.credentials
-        decoded_token = auth.verify_id_token(id_token)
-
-        uid = decoded_token["uid"]
-        email = decoded_token.get("email", "")
-        name = decoded_token.get("name", "")
-        picture = decoded_token.get("picture", "")
-
-        # ✅ 사용자 정보 저장 (최초 로그인 시)
-        await save_user(uid, email, name, picture)
-
-        return decoded_token
-    except Exception as e:
-        print(f"[AUTH ERROR] {e}")  # ✅ 인증 실패 로그
-        raise HTTPException(status_code=401, detail="유효하지 않은 Firebase 인증 토큰입니다.")
+    # TODO: 추후 DB 저장 로직 구현
+    # 예: Firestore에 document 생성, Supabase에 insert 등
+    pass
