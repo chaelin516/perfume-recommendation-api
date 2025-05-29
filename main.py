@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
 
-# 각 기능별 라우터 임포트 (절대경로로 수정 완료)
+# 각 기능별 라우터 임포트
 from routers.perfume_router import router as perfume_router
 from routers.store_router import router as store_router
 from routers.course_router import router as course_router
@@ -23,11 +23,11 @@ app = FastAPI(
 # ✅ 모든 라우터 등록
 app.include_router(perfume_router)      # 향수 목록, 상세
 app.include_router(store_router)        # 매장 전체, 브랜드별 조회
-app.include_router(course_router)       # 향수 코스 추천 (AI 미사용)
-app.include_router(recommend_router)    # 향수 추천 (성별/감정/계절/시간 기반)
-app.include_router(diary_router)        # 시향 일기 저장 및 조회
-app.include_router(auth_router)         # Firebase 인증 라우터
-app.include_router(user_router)         # 사용자 정보 처리
+app.include_router(course_router)       # 향수 코스 추천
+app.include_router(recommend_router)    # 향수 추천
+app.include_router(diary_router)        # 시향 일기
+app.include_router(auth_router)         # Firebase 인증
+app.include_router(user_router)         # 사용자 정보
 app.include_router(recommendation_save_router)  # 추천 결과 저장
 
 # ✅ 유효성 검사 에러 커스텀 응답 처리
@@ -42,11 +42,15 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.get(
     "/",
     summary="루트",
-    description="서버 동작 확인용 엔드포인트입니다.",
-    response_description="서버 작동 메시지 반환"
+    description="ScentRoute API 서버가 정상 작동 중인지 확인합니다.",
+    response_description="서버 상태 메시지"
 )
 def read_root():
-    return {"message": "Hello, FastAPI is working!"}
+    return {
+        "message": "✅ ScentRoute API is running!",
+        "status": "ok",
+        "version": "1.0.0"
+    }
 
 # ✅ 헬스 체크 엔드포인트 (경량화된 상태 확인용)
 @app.get("/health", summary="헬스 체크", description="서버 상태 확인용 경량 엔드포인트")
