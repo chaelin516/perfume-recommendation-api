@@ -1,18 +1,15 @@
-# utils/auth_utils.py
-
 import firebase_admin
 from firebase_admin import credentials, auth
 from fastapi import Header, HTTPException
-from models.user_model import save_user
 import os
+import json
 
-# 🔐 Firebase 서비스 계정 키 경로 설정
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SERVICE_ACCOUNT_PATH = os.path.join(BASE_DIR, "../config/firebase-service-account.json")
-
-# ⚙️ Firebase Admin SDK 초기화 (중복 방지)
+# 🔐 Firebase Admin SDK 초기화 (환경변수에서 JSON으로)
 if not firebase_admin._apps:
-    cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
+    firebase_json = os.getenv("FIREBASE_CREDENTIAL_JSON")
+    if not firebase_json:
+        raise RuntimeError("FIREBASE_CREDENTIAL_JSON 환경변수가 설정되어 있지 않습니다.")
+    cred = credentials.Certificate(json.loads(firebase_json))
     firebase_admin.initialize_app(cred)
 
 # ✅ Firebase ID 토큰 검증
@@ -21,6 +18,7 @@ def verify_firebase_token(id_token: str = Header(..., alias="Authorization")):
     Authorization 헤더에 담긴 Firebase ID 토큰을 검증합니다.
     예: Authorization: Bearer <ID_TOKEN>
     """
+    from models.user_model import save_user  # ⛔ 순환참조 방지용 함수 내 import
 
     # Bearer 토큰 파싱
     if not id_token.startswith("Bearer "):
