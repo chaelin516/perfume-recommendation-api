@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
-from schemas.base import BaseResponse
+from schemas.base import BaseResponse  # ✅ 절대경로 import
 import pandas as pd
 import os
 
@@ -15,7 +15,6 @@ df = pd.read_csv(perfume_path)
 df["emotion_tags"] = df["emotion_tags"].fillna("").astype(str)
 df["notes"] = df["notes"].fillna("").astype(str)
 df["image_url"] = df["image_url"].fillna("").astype(str)
-
 
 # ✅ 전체 향수 목록 조회
 @router.get(
@@ -32,7 +31,6 @@ async def get_all_perfumes():
         message="전체 향수 목록입니다.",
         data={"perfumes": perfumes}
     )
-
 
 # ✅ 특정 향수 상세 조회
 @router.get(
