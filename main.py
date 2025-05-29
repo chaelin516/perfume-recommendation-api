@@ -11,6 +11,7 @@ from routers.recommend_router import router as recommend_router
 from routers.diary_router import router as diary_router
 from routers.auth_router import router as auth_router  # ✅ Firebase 인증 라우터 추가
 from routers.recommendation_save_router import router as recommendation_save_router
+from routers.user_router import router as user_router
 
 # ✅ FastAPI 인스턴스 정의 (Swagger용 정보 포함)
 app = FastAPI(
@@ -25,7 +26,8 @@ app.include_router(store_router)        # 매장 전체, 브랜드별 조회
 app.include_router(course_router)       # 향수 코스 추천 (AI 미사용)
 app.include_router(recommend_router)    # 향수 추천 (성별/감정/계절/시간 기반)
 app.include_router(diary_router)        # 시향 일기 저장 및 조회
-app.include_router(auth_router)         # Firebase 인증 (Google 로그인 등)
+app.include_router(auth_router)  
+app.include_router(user_router)         # Firebase 인증 (Google 로그인 등)
 app.include_router(recommendation_save_router)
 
 # ✅ 유효성 검사 에러 커스텀 응답 처리
