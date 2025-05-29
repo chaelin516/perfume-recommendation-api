@@ -10,22 +10,21 @@ import os, json, uuid
 
 router = APIRouter(prefix="/diaries", tags=["Diary"])
 
-# 파일 경로 설정
+# 📂 시향 일기 데이터 파일 경로
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DIARY_PATH = os.path.join(BASE_DIR, "../data/diary_data.json")
 
-# 기존 데이터 로딩
+# 📦 기존 데이터 로딩
 if os.path.exists(DIARY_PATH):
     with open(DIARY_PATH, "r", encoding="utf-8") as f:
         diary_data = json.load(f)
 else:
     diary_data = []
 
-# ✅ 시향 일기 작성 API
+# ✅ 시향 일기 작성 API (Firebase 로그인 필요)
 @router.post("/", summary="시향 일기 작성", description="사용자가 향수에 대해 작성한 시향 일기를 저장합니다.")
 async def write_diary(entry: DiaryCreateRequest, user=Depends(verify_firebase_token)):
     user_id = user["uid"]
-
     now = datetime.now().isoformat()
 
     diary = {
@@ -35,7 +34,7 @@ async def write_diary(entry: DiaryCreateRequest, user=Depends(verify_firebase_to
         "user_profile_image": user.get("picture", ""),
         "perfume_id": f"perfume_{entry.perfume_name.lower().replace(' ', '_')}",
         "perfume_name": entry.perfume_name,
-        "brand": "Dummy Brand",  # 실제 프로젝트에서는 향수 브랜드 정보 연동 필요
+        "brand": "Dummy Brand",  # 실제 브랜드 연동 필요
         "content": entry.content or "",
         "tags": entry.emotion_tags or [],
         "likes": 0,
@@ -107,7 +106,7 @@ async def get_diary_list(
             content={"message": f"서버 오류: {str(e)}"}
         )
 
-# ✅ 시향 일기 좋아요 추가 API
+# ✅ 좋아요 추가 API
 @router.post("/{diary_id}/like", summary="시향 일기 좋아요 추가", description="해당 시향 일기의 좋아요 수를 1 증가시킵니다.")
 async def like_diary(diary_id: str):
     found = False
@@ -127,7 +126,7 @@ async def like_diary(diary_id: str):
 
     return JSONResponse(status_code=200, content={"message": "좋아요가 추가되었습니다."})
 
-# ✅ 시향 일기 좋아요 취소 API
+# ✅ 좋아요 취소 API
 @router.delete("/{diary_id}/unlike", summary="시향 일기 좋아요 취소", description="해당 시향 일기의 좋아요 수를 1 감소시킵니다.")
 async def unlike_diary(diary_id: str):
     found = False

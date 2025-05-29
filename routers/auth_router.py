@@ -1,20 +1,15 @@
-# perfume_backend/routers/auth_router.py
+# routers/auth_router.py
 
-from fastapi import APIRouter, HTTPException, Header
-from fastapi.responses import JSONResponse
-from firebase_admin import auth
-from schemas.common import BaseResponse
-import firebase_admin
+from fastapi import APIRouter, Depends
+from utils.auth_utils import verify_firebase_token
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
-@router.post("/login", summary="Firebase 로그인", description="iOS에서 전달된 Firebase ID 토큰을 검증합니다.")
-async def login(id_token: str = Header(..., description="Firebase에서 발급된 ID 토큰")):
-    try:
-        decoded_token = auth.verify_id_token(id_token)
-        uid = decoded_token["uid"]
-        email = decoded_token.get("email", "unknown")
-
-        return BaseResponse(message="로그인 성공", result={"uid": uid, "email": email})
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"인증 실패: {str(e)}")
+# ✅ Swagger 테스트용 간단 인증 확인 API
+@router.post("/test", summary="Firebase 토큰 유효성 테스트", description="Firebase 토큰이 유효한지 확인합니다.")
+async def test_token(user=Depends(verify_firebase_token)):
+    return {
+        "message": f"{user.get('name', '알 수 없음')}님, 인증되었습니다.",
+        "uid": user["uid"],
+        "email": user.get("email")
+    }
