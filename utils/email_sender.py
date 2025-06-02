@@ -11,8 +11,8 @@ class EmailSender:
         # 환경변수에서 SMTP 설정 가져오기
         self.smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
         self.smtp_port = int(os.getenv('SMTP_PORT', '587'))
-        self.smtp_username = os.getenv('SMTP_USERNAME', 'cswingzz83@gmail.com')
-        self.smtp_password = os.getenv('SMTP_PASSWORD', 'mdwk owvs ffgg rusy')
+        self.smtp_username = os.getenv('SMTP_USERNAME', 'cswingzz74@gmail.com')
+        self.smtp_password = os.getenv('SMTP_PASSWORD', 'jrjz fent efzd huri')
         self.from_email = os.getenv('FROM_EMAIL', self.smtp_username)
 
     def send_verification_email(self, to_email: str, verification_link: str, user_name: str = "사용자") -> bool:
