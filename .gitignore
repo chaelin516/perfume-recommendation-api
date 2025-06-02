@@ -20,3 +20,5 @@ __pycache__/
 
 # ⚙️ VSCode 설정
 .vscode/
+
+firebase_key.json
