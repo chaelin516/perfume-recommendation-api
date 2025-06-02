@@ -10,6 +10,7 @@ fastapi==0.95.2
 uvicorn[standard]==0.23.2
 python-multipart==0.0.9
 python-dotenv==1.0.0
+email-validator==2.0.0
 
 # ✅ DB 연동 (버전 충돌 해결!)
 sqlalchemy==1.4.41
