@@ -17,8 +17,8 @@ from routers.user_router import router as user_router
 
 app = FastAPI(
     title="ScentRoute API",
-    description="AI 기반 향수 추천 및 시향 코스 추천 서비스의 백엔드 API입니다. 0.001",
-    version="1.0.0"
+    description="AI 기반 향수 추천 및 시향 코스 추천 서비스의 백엔드 API입니다.",
+    version="1.0.1"
 )
 
 # 모든 라우터 등록
