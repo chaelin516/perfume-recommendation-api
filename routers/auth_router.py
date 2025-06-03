@@ -1,4 +1,4 @@
-# routers/auth_router.py - 실제 이메일 발송 기능 포함
+# routers/auth_router.py - 회원 탈퇴 및 비밀번호 재설정 기능 추가
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
@@ -377,6 +377,114 @@ async def resend_verification_email(request: VerifyEmailRequest):
         raise HTTPException(
             status_code=500,
             detail="이메일 인증 재발송 중 오류가 발생했습니다."
+        )
+
+
+# 🆕 비밀번호 재설정 이메일 발송 API
+@router.post(
+    "/forgot-password",
+    summary="비밀번호 재설정 이메일 발송",
+    description="비밀번호를 잊어버린 사용자에게 재설정 이메일을 발송합니다.",
+    responses={
+        200: {"description": "비밀번호 재설정 이메일 발송 성공"},
+        404: {"description": "존재하지 않는 이메일"},
+        500: {"description": "서버 내부 오류"}
+    }
+)
+async def forgot_password(request: ForgotPasswordRequest):
+    """비밀번호 재설정 이메일 발송"""
+    logger.info(f"🔑 비밀번호 재설정 요청")
+    logger.info(f"  - 이메일: {request.email}")
+
+    try:
+        # 1. 사용자 존재 확인
+        logger.info(f"👤 사용자 존재 확인...")
+        try:
+            user_record = auth.get_user_by_email(request.email)
+            logger.info(f"✅ 사용자 확인 완료: {user_record.uid}")
+        except auth.UserNotFoundError:
+            logger.warning(f"⚠️ 존재하지 않는 사용자: {request.email}")
+            raise HTTPException(
+                status_code=404,
+                detail="해당 이메일로 가입된 계정을 찾을 수 없습니다."
+            )
+
+        # 2. 비밀번호 재설정 링크 생성
+        logger.info(f"🔗 비밀번호 재설정 링크 생성...")
+        try:
+            reset_link = auth.generate_password_reset_link(request.email)
+            logger.info(f"✅ 비밀번호 재설정 링크 생성 완료")
+            logger.info(f"  - 링크 길이: {len(reset_link)}자")
+        except Exception as e:
+            logger.error(f"❌ 비밀번호 재설정 링크 생성 실패: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail="비밀번호 재설정 링크 생성에 실패했습니다."
+            )
+
+        # 3. SMTP 설정 확인
+        logger.info(f"📧 SMTP 설정 확인...")
+        smtp_configured, smtp_message = email_sender.check_smtp_config()
+        logger.info(f"  - SMTP 설정: {'✅ 완료' if smtp_configured else '❌ 미완료'}")
+
+        # 4. 이메일 발송
+        email_sent = False
+        email_error = None
+
+        if smtp_configured:
+            logger.info(f"📮 비밀번호 재설정 이메일 발송 시작...")
+            try:
+                email_sent, email_message = email_sender.send_password_reset_email(
+                    to_email=request.email,
+                    reset_link=reset_link,
+                    user_name=user_record.display_name or "사용자"
+                )
+
+                if email_sent:
+                    logger.info(f"✅ 비밀번호 재설정 이메일 발송 성공")
+                else:
+                    logger.error(f"❌ 비밀번호 재설정 이메일 발송 실패: {email_message}")
+                    email_error = email_message
+
+            except Exception as e:
+                logger.error(f"❌ 비밀번호 재설정 이메일 발송 중 예외: {str(e)}")
+                email_sent = False
+                email_error = f"이메일 발송 예외: {str(e)}"
+        else:
+            email_error = f"SMTP 설정 미완료: {smtp_message}"
+            logger.warning(f"⚠️ {email_error}")
+
+        # 5. 응답 생성
+        if email_sent:
+            return JSONResponse(
+                content={
+                    "message": "비밀번호 재설정 이메일이 발송되었습니다. 이메일을 확인해주세요.",
+                    "email": request.email,
+                    "email_sent": True,
+                    "note": "이메일이 도착하지 않으면 스팸 폴더를 확인해주세요."
+                }
+            )
+        else:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "message": "비밀번호 재설정 이메일 발송에 실패했습니다.",
+                    "email": request.email,
+                    "email_sent": False,
+                    "error": email_error,
+                    "reset_link": reset_link,
+                    "manual_note": "위 링크를 브라우저에서 직접 열어 비밀번호를 재설정할 수 있습니다."
+                }
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 비밀번호 재설정 처리 중 오류: {e}")
+        logger.error(f"  - Exception Type: {type(e).__name__}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"비밀번호 재설정 처리 중 오류가 발생했습니다: {str(e)}"
         )
 
 
