@@ -55,7 +55,7 @@ class EmailSender:
                 return False, config_message
 
             # 이메일 내용 구성
-            subject = "ScentRoute - 이메일 인증을 완료해주세요"
+            subject = "Whiff - 이메일 인증을 완료해주세요"
 
             html_body = f"""
             <!DOCTYPE html>
@@ -82,16 +82,16 @@ class EmailSender:
             </head>
             <body>
                 <div class="container">
-                    <h2 class="header">🌸 ScentRoute 이메일 인증</h2>
+                    <h2 class="header">🌸 Whiff 이메일 인증</h2>
                     <p>안녕하세요, <strong>{user_name}</strong>님!</p>
-                    <p>ScentRoute에 가입해주셔서 감사합니다. 아래 버튼을 클릭하여 이메일 인증을 완료해주세요.</p>
+                    <p>Whiff에 가입해주셔서 감사합니다. 아래 버튼을 클릭하여 이메일 인증을 완료해주세요.</p>
                     <div style="text-align: center;">
                         <a href="{verification_link}" class="button">✅ 이메일 인증하기</a>
                     </div>
                     <div class="footer">
                         <hr>
                         <p>이 이메일을 요청하지 않으셨다면 무시해주세요.</p>
-                        <p><strong>ScentRoute 팀</strong> 드림 🌹</p>
+                        <p><strong>Whiff 팀</strong> 드림 🌹</p>
                     </div>
                 </div>
             </body>
@@ -99,18 +99,18 @@ class EmailSender:
             """
 
             text_body = f"""
-ScentRoute 이메일 인증
+Whiff 이메일 인증
 
 안녕하세요, {user_name}님!
 
-ScentRoute에 가입해주셔서 감사합니다. 
+Whiff에 가입해주셔서 감사합니다. 
 아래 링크를 클릭하여 이메일 인증을 완료해주세요.
 
 {verification_link}
 
 이 이메일을 요청하지 않으셨다면 무시해주세요.
 
-ScentRoute 팀 드림
+Whiff 팀 드림
             """
 
             # 이메일 발송

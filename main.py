@@ -20,9 +20,9 @@ logger = logging.getLogger(__name__)
 
 # FastAPI 앱 생성
 app = FastAPI(
-    title="ScentRoute API",
+    title="Whiff API",
     description="AI 기반 향수 추천 및 시향 코스 추천 서비스의 백엔드 API입니다.",
-    version="1.0.7"
+    version="1.0.8"
 )
 
 # CORS 설정
@@ -99,7 +99,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 @app.on_event("startup")
 async def startup_event():
     try:
-        logger.info("🚀 ScentRoute API 서버 시작 중...")
+        logger.info("🚀 Whiff API 서버 시작 중...")
 
         # 환경변수 확인
         env_vars = {
@@ -133,7 +133,7 @@ async def startup_event():
         except Exception as e:
             logger.error(f"❌ SMTP 상태 확인 실패: {e}")
 
-        logger.info("✅ ScentRoute API 서버가 성공적으로 시작되었습니다!")
+        logger.info("✅ Whiff API 서버가 성공적으로 시작되었습니다!")
 
     except Exception as e:
         logger.error(f"❌ 서버 시작 중 오류: {e}")
@@ -143,7 +143,7 @@ async def startup_event():
 # ✅ 서버 종료 이벤트
 @app.on_event("shutdown")
 async def shutdown_event():
-    logger.info("🔚 ScentRoute API 서버가 종료됩니다.")
+    logger.info("🔚 Whiff API 서버가 종료됩니다.")
 
 
 # 라우터 임포트 및 등록 (예외 처리 포함)
@@ -187,7 +187,7 @@ except Exception as e:
 @app.get("/", summary="루트", operation_id="get_root")
 def read_root():
     return {
-        "message": "✅ ScentRoute API is running!",
+        "message": "✅ Whiff API is running!",
         "status": "ok",
         "version": "1.0.7",
         "environment": "production" if os.getenv("RENDER") else "development"
@@ -206,7 +206,7 @@ def health_check():
         # 간단한 헬스 체크
         return {
             "status": "ok",
-            "service": "ScentRoute API",
+            "service": "Whiff API",
             "version": "1.0.7",
             "timestamp": logger.handlers[0].formatter.formatTime(
                 logger.makeRecord("", 0, "", 0, "", (), None)
@@ -247,7 +247,7 @@ def get_server_status():
             logger.error(f"SMTP 상태 확인 실패: {e}")
 
         return {
-            "service": "ScentRoute API",
+            "service": "Whiff API",
             "version": "1.0.7",
             "status": "running",
             "environment": "production" if os.getenv("RENDER") else "development",
