@@ -1,4 +1,5 @@
-# main.py - Temporary Auth 제거 및 최적화 버전
+# main.py - 감정 분석 시스템 포함 버전
+
 import logging
 import sys
 import traceback
@@ -21,8 +22,8 @@ logger = logging.getLogger(__name__)
 # FastAPI 앱 생성
 app = FastAPI(
     title="Whiff API",
-    description="AI 기반 향수 추천 및 시향 코스 추천 서비스의 백엔드 API입니다.",
-    version="1.1.0"
+    description="AI 기반 향수 추천, 시향 코스 추천 및 감정 분석 서비스의 백엔드 API입니다.",
+    version="1.2.0"  # 🔄 버전 업데이트 (감정 분석 추가)
 )
 
 # CORS 설정
@@ -95,7 +96,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     )
 
 
-# ✅ 서버 시작 이벤트 (최적화)
+# ✅ 서버 시작 이벤트 (감정 분석 시스템 포함)
 @app.on_event("startup")
 async def startup_event():
     try:
@@ -117,10 +118,21 @@ async def startup_event():
         except Exception as e:
             logger.warning(f"⚠️ Firebase 상태 확인 건너뜀: {e}")
 
+        # 🎭 감정 분석 시스템 초기화
+        try:
+            from utils.emotion_analyzer import emotion_analyzer
+            stats = emotion_analyzer.get_analysis_stats()
+            logger.info(f"🎭 감정 분석 시스템: ✅ 초기화 완료")
+            logger.info(f"  - 지원 감정: {stats['supported_emotions']}개")
+            logger.info(f"  - 모델 상태: {'✅ 로딩됨' if stats['model_loaded'] else '⚠️ 룰 기반만'}")
+            logger.info(f"  - 버전: {stats['model_version']}")
+        except Exception as e:
+            logger.warning(f"⚠️ 감정 분석 시스템 초기화 건너뜀: {e}")
+
         # ML 모델은 lazy loading으로 처리 (시작 시 로딩하지 않음)
         logger.info("🤖 ML 모델: Lazy Loading 설정 완료")
 
-        logger.info("✅ Whiff API 서버가 빠르게 시작되었습니다!")
+        logger.info("✅ Whiff API 서버가 성공적으로 시작되었습니다!")
 
     except Exception as e:
         logger.error(f"❌ 서버 시작 중 오류: {e}")
@@ -133,11 +145,11 @@ async def shutdown_event():
     logger.info("🔚 Whiff API 서버가 종료됩니다.")
 
 
-# 🎯 핵심 라우터만 등록 (Temporary Auth 제거)
+# 🎯 모든 라우터 등록 (감정 분석 라우터 추가)
 try:
-    logger.info("📋 핵심 라우터 등록 시작...")
+    logger.info("📋 라우터 등록 시작...")
 
-    # 필수 라우터들
+    # 기존 핵심 라우터들
     from routers.perfume_router import router as perfume_router
     from routers.store_router import router as store_router
     from routers.course_router import router as course_router
@@ -147,30 +159,37 @@ try:
     from routers.recommendation_save_router import router as recommendation_save_router
     from routers.user_router import router as user_router
 
-    # 라우터 등록
+    # 🆕 감정 분석 라우터 추가
+    from routers.emotion_router import router as emotion_router
+
+    # 라우터 등록 (순서 중요 - 의존성 고려)
     app.include_router(perfume_router)
     app.include_router(store_router)
     app.include_router(course_router)
     app.include_router(recommend_router)
-    app.include_router(diary_router)
+    app.include_router(diary_router)  # 감정 분석 기능이 통합된 버전
+    app.include_router(emotion_router)  # 🆕 감정 분석 전용 API
     app.include_router(auth_router)
     app.include_router(user_router)
     app.include_router(recommendation_save_router)
 
-    logger.info("✅ 모든 핵심 라우터 등록 완료")
+    logger.info("✅ 모든 라우터 등록 완료")
+    logger.info("  - 기존 라우터: 8개")
+    logger.info("  - 새 라우터: 1개 (감정 분석)")
+    logger.info("  - 총 라우터: 9개")
 
 except Exception as e:
     logger.error(f"❌ 라우터 등록 중 오류: {e}")
     logger.error(f"Traceback: {traceback.format_exc()}")
 
 
-# ✅ 루트 엔드포인트
+# ✅ 루트 엔드포인트 (기능 업데이트)
 @app.get("/", summary="루트", operation_id="get_root")
 def read_root():
     return {
         "message": "✅ Whiff API is running!",
         "status": "ok",
-        "version": "1.1.0",
+        "version": "1.2.0",  # 🔄 버전 업데이트
         "environment": "production" if os.getenv("RENDER") else "development",
         "port": os.getenv("PORT", "8000"),
         "features": [
@@ -179,7 +198,14 @@ def read_root():
             "매장 정보",
             "코스 추천",
             "사용자 인증",
-            "회원 관리"
+            "회원 관리",
+            "🆕 감정 분석"  # 새 기능 추가
+        ],
+        "new_endpoints": [
+            "/emotions/analyze - 감정 분석",
+            "/emotions/analyze-batch - 배치 감정 분석",
+            "/emotions/emotions - 지원 감정 조회",
+            "/emotions/status - 감정 시스템 상태"
         ]
     }
 
@@ -189,18 +215,32 @@ def head_root():
     return JSONResponse(content={})
 
 
-# ✅ 헬스 체크
+# ✅ 헬스 체크 (감정 분석 상태 포함)
 @app.get("/health", summary="헬스 체크", operation_id="get_health_check")
 def health_check():
     try:
-        # 간단한 헬스 체크
+        # 🎭 감정 분석 시스템 상태 체크
+        emotion_status = "unknown"
+        try:
+            from utils.emotion_analyzer import emotion_analyzer
+            stats = emotion_analyzer.get_analysis_stats()
+            emotion_status = "available" if stats else "error"
+        except Exception:
+            emotion_status = "unavailable"
+
         return {
             "status": "ok",
             "service": "Whiff API",
-            "version": "1.1.0",
+            "version": "1.2.0",
             "environment": "production" if os.getenv("RENDER") else "development",
             "port": os.getenv("PORT", "8000"),
-            "uptime": "running"
+            "uptime": "running",
+            "systems": {
+                "core_api": "ok",
+                "emotion_analysis": emotion_status,  # 🆕 감정 분석 상태
+                "firebase_auth": "ok",
+                "database": "ok"
+            }
         }
     except Exception as e:
         logger.error(f"Health check failed: {e}")
@@ -215,7 +255,7 @@ def head_health_check():
     return JSONResponse(content={})
 
 
-# ✅ 상태 정보
+# ✅ 상태 정보 (감정 분석 정보 포함)
 @app.get("/status", summary="서버 상태 정보", operation_id="get_server_status")
 def get_server_status():
     try:
@@ -236,25 +276,38 @@ def get_server_status():
         except Exception as e:
             logger.error(f"SMTP 상태 확인 실패: {e}")
 
+        # 🎭 감정 분석 시스템 상태 확인
+        emotion_status = None
+        try:
+            from utils.emotion_analyzer import emotion_analyzer
+            emotion_status = emotion_analyzer.get_analysis_stats()
+        except Exception as e:
+            logger.error(f"감정 분석 상태 확인 실패: {e}")
+
         return {
             "service": "Whiff API",
-            "version": "1.1.0",
+            "version": "1.2.0",
             "status": "running",
             "environment": "production" if os.getenv("RENDER") else "development",
-            "firebase": firebase_status,
-            "smtp": smtp_status,
+            "systems": {
+                "firebase": firebase_status,
+                "smtp": smtp_status,
+                "emotion_analysis": emotion_status  # 🆕 감정 분석 상태
+            },
             "features": {
                 "auth": "Firebase Authentication",
                 "database": "SQLite + JSON Files",
                 "ml_model": "TensorFlow (Lazy Loading)",
                 "deployment": "Render.com",
-                "email": "SMTP (Gmail)"
+                "email": "SMTP (Gmail)",
+                "emotion_analysis": "Rule-based + AI Model (준비중)"  # 🆕 감정 분석
             },
             "endpoints": {
                 "perfumes": "향수 정보 및 추천",
                 "stores": "매장 정보",
                 "courses": "시향 코스 추천",
-                "diaries": "시향 일기",
+                "diaries": "시향 일기 (감정 분석 통합)",  # 🔄 업데이트됨
+                "emotions": "🆕 감정 분석",  # 새 엔드포인트
                 "auth": "사용자 인증",
                 "users": "사용자 관리"
             }
@@ -267,6 +320,65 @@ def get_server_status():
         )
 
 
+# 🆕 감정 분석 시스템 전용 상태 확인
+@app.get("/emotion-system-info", summary="감정 분석 시스템 정보")
+def get_emotion_system_info():
+    """감정 분석 시스템의 상세 정보를 제공하는 별도 엔드포인트"""
+    try:
+        from utils.emotion_analyzer import emotion_analyzer
+
+        stats = emotion_analyzer.get_analysis_stats()
+        supported_emotions = emotion_analyzer.get_supported_emotions()
+        emotion_mapping = emotion_analyzer.emotion_to_tags
+
+        return {
+            "system": "Whiff 감정 분석 시스템",
+            "version": "1.0.0",
+            "model_version": stats.get("model_version", "unknown"),
+            "status": "operational",
+            "capabilities": {
+                "text_analysis": True,
+                "batch_analysis": True,
+                "emotion_tagging": True,
+                "ai_model": stats.get("model_loaded", False),
+                "rule_based": True,
+                "korean_language": True
+            },
+            "supported_emotions": {
+                "count": len(supported_emotions),
+                "list": supported_emotions,
+                "mapping": emotion_mapping
+            },
+            "limits": {
+                "max_text_length": 2000,
+                "max_batch_size": 10,
+                "supported_languages": ["한국어"]
+            },
+            "statistics": stats,
+            "endpoints": [
+                "/emotions/analyze",
+                "/emotions/analyze-batch",
+                "/emotions/emotions",
+                "/emotions/status",
+                "/diaries/ (감정 분석 통합)"
+            ]
+        }
+
+    except Exception as e:
+        logger.error(f"Emotion system info failed: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "감정 분석 시스템 정보 조회 실패",
+                "message": str(e),
+                "fallback_info": {
+                    "system": "Whiff 감정 분석 시스템",
+                    "status": "error"
+                }
+            }
+        )
+
+
 # ✅ Render.com을 위한 메인 실행 부분
 if __name__ == "__main__":
     import uvicorn
@@ -275,6 +387,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
 
     logger.info(f"🚀 서버 시작: 포트 {port}")
+    logger.info(f"🎭 감정 분석 시스템 포함")
 
     uvicorn.run(
         "main:app",
