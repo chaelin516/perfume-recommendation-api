@@ -126,7 +126,7 @@ def recommend_course(request: CourseRecommendRequest):
         logger.info("[COURSE] 후보 향수가 없어 빈 결과 반환")
         return CourseRecommendResponse(message="향수 코스 추천 성공", data=[])
 
-    # 3) 상위 5개 향수(예시)만 추출 (필요시 모델 점수 기반으로 변경)
+    # 3) 상위 5개 향수(예시)만 추출 (필요 시 모델 점수 기반으로 수정 가능)
     top_perfumes = candidates["name"].tolist()[:5]
     logger.info(f"[COURSE] 상위 추천 향수(최대 5개): {top_perfumes}")
 
