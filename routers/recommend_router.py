@@ -4,44 +4,46 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List, Literal
 import pandas as pd
-import numpy as np
-from sklearn.preprocessing import OneHotEncoder
+import pickle
 from tensorflow.keras.models import load_model
 import os
 
 # ─── 1. 데이터(향수 메타) 로드 ───────────────────────────────────────────────
 DATA_PATH = os.path.join(os.path.dirname(__file__), "../data/perfume_final_dataset.csv")
-df = pd.read_csv(DATA_PATH)
-df.fillna("", inplace=True)
+try:
+    df = pd.read_csv(DATA_PATH)
+    df.fillna("", inplace=True)
+except Exception as e:
+    raise RuntimeError(f"perfume_final_dataset.csv 로드 중 오류: {e}")
 
-# ─── 2. Keras 모델 경로 지정 ────────────────────────────────────────────────────
+# ─── 2. Keras 모델 및 Encoder 경로 설정 ─────────────────────────────────────────
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "../models/final_model_perfume.keras")
+ENCODER_PATH = os.path.join(os.path.dirname(__file__), "../models/encoder.pkl")
 
 # ─── 3. 전역 변수(lazy loading) ─────────────────────────────────────────────────
 _model = None
+_encoder = None
 
 def get_model():
     global _model
     if _model is None:
-        _model = load_model(MODEL_PATH)
+        try:
+            _model = load_model(MODEL_PATH)
+        except Exception as e:
+            raise RuntimeError(f"Keras 모델 로드 중 오류: {e}")
     return _model
 
-# ─── 4. OneHotEncoder 준비: (gender, season, time, impression, activity, weather) 순서 ────
-#    - categories 리스트 안에 “허용 가능한 문자열”을 반드시 모두 나열해야 함
-#    - handle_unknown="ignore"로 지정하면, transform 시 허용되지 않은 값이 들어와도 에러 대신 0 벡터로 처리
-CATEGORIES = [
-    ["women", "men", "unisex"],                     # gender
-    ["spring", "summer", "fall", "winter"],          # season
-    ["day", "night"],                                # time
-    ["confident", "elegant", "pure", "friendly", "mysterious", "fresh"],  # impression
-    ["casual", "work", "date"],                      # activity
-    ["hot", "cold", "rainy", "any"]                  # weather
-]
-_encoder = OneHotEncoder(categories=CATEGORIES, handle_unknown="ignore", sparse=False)
+def get_encoder():
+    global _encoder
+    if _encoder is None:
+        try:
+            with open(ENCODER_PATH, "rb") as f:
+                _encoder = pickle.load(f)
+        except Exception as e:
+            raise RuntimeError(f"encoder.pkl 로드 중 오류: {e}")
+    return _encoder
 
-# ※ 이미 categories를 직접 지정했기 때문에, 별도의 fit() 호출 없이 곧바로 transform()만 사용 가능합니다.
-
-# ─── 5. 요청(Request) 스키마 정의 ───────────────────────────────────────────────
+# ─── 4. 요청(Request) 스키마 정의 ────────────────────────────────────────────────
 class RecommendRequest(BaseModel):
     gender: Literal["women", "men", "unisex"]
     season: Literal["spring", "summer", "fall", "winter"]
@@ -50,7 +52,7 @@ class RecommendRequest(BaseModel):
     activity: Literal["casual", "work", "date"]
     weather: Literal["hot", "cold", "rainy", "any"]
 
-# ─── 6. 응답(Response) 스키마 정의 ───────────────────────────────────────────────
+# ─── 5. 응답(Response) 스키마 정의 ────────────────────────────────────────────────
 class PerfumeRecommendItem(BaseModel):
     name: str
     brand: str
@@ -67,12 +69,12 @@ router = APIRouter(prefix="/perfumes", tags=["Perfume"])
     summary="모델 기반 향수 추천",
     description=(
         "API로 받은 gender, season, time, impression, activity, weather 정보를 "
-        "OneHotEncoder → Keras 모델에 그대로 전달하여, 예측 점수가 높은 상위 10개 향수를 반환합니다."
+        "encoder.pkl에 정의된 전처리기 → Keras 모델에 그대로 전달하여, "
+        "예측 점수가 높은 상위 10개 향수를 반환합니다."
     )
 )
 def recommend_perfumes(request: RecommendRequest):
-    # 1) 클라이언트 요청에서 받은 6개 문자열을 그대로 raw_features에 담는다
-    #    → 순서: [gender, season, time, impression, activity, weather]
+    # ─── 1) 요청에서 받은 6개 값을 순서대로 리스트에 담기 ──────────────────────────────
     raw_features = [
         request.gender,
         request.season,
@@ -82,39 +84,40 @@ def recommend_perfumes(request: RecommendRequest):
         request.weather
     ]
 
-    # 2) OneHotEncoder.transform() 으로 숫자형 입력 행렬(x_input) 생성
+    # ─── 2) Encoder 로 전처리(transform) ─────────────────────────────────────────────
     try:
-        # transform 메서드는 2D 배열을 기대하므로, [raw_features]처럼 리스트 안에 리스트 형태로 넘김
-        x_input = _encoder.transform([raw_features])  # 결과는 NumPy 배열(shape: (1, 총 원-핫 차원))
+        encoder = get_encoder()
+        # Encoder가 이미 fit된 상태여야 transform() 호출 가능
+        x_input = encoder.transform([raw_features])  # 결과: (1, D) 형태의 NumPy 배열
     except Exception as e:
-        # 만약 raw_features 값이 CATEGORIES에 정의되지 않았다면 이 부분에서 예외 발생
-        raise HTTPException(status_code=400, detail=f"입력값 전처리 중 오류: {str(e)}")
+        # “This OneHotEncoder instance is not fitted yet...” 등의 오류 방지
+        raise HTTPException(status_code=400, detail=f"입력값 전처리 중 오류: {e}")
 
-    # 3) 모델 불러와서 예측(predict)
-    model = get_model()
+    # ─── 3) Keras 모델 예측(predict) ───────────────────────────────────────────────
     try:
+        model = get_model()
         preds = model.predict(x_input)  # preds.shape == (1, num_perfumes)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"모델 예측 중 오류: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"모델 예측 중 오류: {e}")
 
-    # 4) 1차원 배열로 변환
-    scores = preds.flatten()  # shape: (num_perfumes,)
+    # ─── 4) 1차원 배열로 변환 ───────────────────────────────────────────────────────
+    scores = preds.flatten()  # (num_perfumes,) 형태
 
-    # 5) 모델 출력 크기(num_perfumes)와 DataFrame 행 수(df.shape[0]) 비교
+    # ─── 5) 모델 출력 개수와 DataFrame 행 개수 일치 확인 ─────────────────────────────
     if len(scores) != len(df):
         raise HTTPException(
             status_code=500,
-            detail="모델 출력 크기가 데이터프레임 행 개수와 맞지 않습니다."
+            detail="모델 출력 크기가 perfume_final_dataset.csv의 행 개수와 일치하지 않습니다."
         )
 
-    # 6) 원본 df 복사본에 “score” 컬럼을 추가
+    # ─── 6) DataFrame 복사본에 점수(score) 컬럼 추가 ─────────────────────────────────
     df_with_scores = df.copy()
     df_with_scores["score"] = scores
 
-    # 7) score 기준 내림차순 정렬 후 상위 10개(Head 10)만 추출
+    # ─── 7) score 내림차순 정렬 후 상위 10개 추출 ────────────────────────────────────
     top_10 = df_with_scores.sort_values(by="score", ascending=False).head(10)
 
-    # 8) 최종 응답 리스트 생성
+    # ─── 8) 최종 응답 리스트 생성 ────────────────────────────────────────────────────
     response_list: List[PerfumeRecommendItem] = []
     for _, row in top_10.iterrows():
         response_list.append(
