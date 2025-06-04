@@ -21,6 +21,23 @@ try:
     df = pd.read_csv(DATA_PATH)
     df.fillna("", inplace=True)
     logger.info(f"Perfume dataset loaded: {df.shape[0]} rows")
+    logger.info(f"Available columns: {list(df.columns)}")
+
+    # ✅ 컬럼 존재 여부 확인
+    required_columns = ['name', 'brand', 'image_url', 'notes']
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    if missing_columns:
+        logger.error(f"Missing required columns: {missing_columns}")
+        raise RuntimeError(f"Missing required columns: {missing_columns}")
+
+    # ✅ emotion 관련 컬럼 확인
+    if 'desired_impression' in df.columns:
+        logger.info("Using 'desired_impression' column for emotion data")
+    elif 'emotion_cluster' in df.columns:
+        logger.info("Using 'emotion_cluster' column for emotion data")
+    else:
+        logger.warning("No emotion-related columns found")
+
 except Exception as e:
     logger.error(f"perfume_final_dataset.csv 로드 중 오류: {e}")
     raise RuntimeError(f"perfume_final_dataset.csv 로드 중 오류: {e}")
@@ -31,6 +48,7 @@ ENCODER_PATH = os.path.join(os.path.dirname(__file__), "../models/encoder.pkl")
 
 # ─── 3. 전역 변수(lazy loading) 및 OneHotEncoder 설정 ─────────────────────────────────
 _model = None
+
 
 def get_model():
     global _model
@@ -43,6 +61,7 @@ def get_model():
             raise RuntimeError(f"Keras 모델 로드 중 오류: {e}")
     return _model
 
+
 # encoder.pkl 로드 함수
 def get_saved_encoder():
     try:
@@ -54,14 +73,15 @@ def get_saved_encoder():
         logger.error(f"encoder.pkl 로드 중 오류: {e}")
         raise RuntimeError(f"encoder.pkl 로드 중 오류: {e}")
 
+
 # fallback OneHotEncoder: 카테고리 직접 선언, handle_unknown="ignore" 설정
 CATEGORIES = [
-    ["women", "men", "unisex"],                     # gender
-    ["spring", "summer", "fall", "winter"],          # season
-    ["day", "night"],                                # time
+    ["women", "men", "unisex"],  # gender
+    ["spring", "summer", "fall", "winter"],  # season
+    ["day", "night"],  # time
     ["confident", "elegant", "pure", "friendly", "mysterious", "fresh"],  # impression
-    ["casual", "work", "date"],                      # activity
-    ["hot", "cold", "rainy", "any"]                  # weather
+    ["casual", "work", "date"],  # activity
+    ["hot", "cold", "rainy", "any"]  # weather
 ]
 _fallback_encoder = OneHotEncoder(categories=CATEGORIES, handle_unknown="ignore", sparse=False)
 # 더미 데이터를 이용해 한 번 fit() 호출
@@ -70,7 +90,35 @@ _fallback_encoder.fit([
     ["men", "summer", "night", "elegant", "work", "cold"]
 ])
 
-# ─── 4. 요청(Request) 스키마 정의 ────────────────────────────────────────────────
+
+# ─── 4. 감정 클러스터를 텍스트로 변환하는 함수 ────────────────────────────────────────
+def get_emotion_text(row):
+    """
+    row에서 감정 정보를 추출합니다.
+    우선순위: desired_impression > emotion_cluster > 기본값
+    """
+    # 1순위: desired_impression 컬럼 사용
+    if 'desired_impression' in df.columns and pd.notna(row.get('desired_impression')):
+        return str(row['desired_impression'])
+
+    # 2순위: emotion_cluster를 텍스트로 변환
+    if 'emotion_cluster' in df.columns and pd.notna(row.get('emotion_cluster')):
+        cluster_map = {
+            0: "차분한, 편안한",
+            1: "자신감, 신선함",
+            2: "우아함, 친근함",
+            3: "순수함, 친근함",
+            4: "신비로운, 매력적",
+            5: "활기찬, 에너지"
+        }
+        cluster_id = int(row['emotion_cluster']) if str(row['emotion_cluster']).isdigit() else 0
+        return cluster_map.get(cluster_id, "균형잡힌")
+
+    # 기본값
+    return "다양한 감정"
+
+
+# ─── 5. 요청(Request) 스키마 정의 ────────────────────────────────────────────────
 class RecommendRequest(BaseModel):
     gender: Literal["women", "men", "unisex"]
     season: Literal["spring", "summer", "fall", "winter"]
@@ -79,7 +127,8 @@ class RecommendRequest(BaseModel):
     activity: Literal["casual", "work", "date"]
     weather: Literal["hot", "cold", "rainy", "any"]
 
-# ─── 5. 응답(Response) 스키마 정의 ────────────────────────────────────────────────
+
+# ─── 6. 응답(Response) 스키마 정의 ────────────────────────────────────────────────
 class PerfumeRecommendItem(BaseModel):
     name: str
     brand: str
@@ -88,16 +137,18 @@ class PerfumeRecommendItem(BaseModel):
     emotions: str
     reason: str
 
+
 router = APIRouter(prefix="/perfumes", tags=["Perfume"])
+
 
 @router.post(
     "/recommend",
     response_model=List[PerfumeRecommendItem],
     summary="모델 기반 향수 추천",
     description=(
-        "gender, season, time, impression, activity, weather 정보를 입력받아\n"
-        "encoder.pkl 또는 fallback OneHotEncoder로 전처리 → Keras 모델 예측으로\n"
-        "향수 10개를 추천합니다."
+            "gender, season, time, impression, activity, weather 정보를 입력받아\n"
+            "encoder.pkl 또는 fallback OneHotEncoder로 전처리 → Keras 모델 예측으로\n"
+            "향수 10개를 추천합니다."
     )
 )
 def recommend_perfumes(request: RecommendRequest):
@@ -163,15 +214,19 @@ def recommend_perfumes(request: RecommendRequest):
     # 9) 결과 가공하여 반환
     response_list: List[PerfumeRecommendItem] = []
     for _, row in top_10.iterrows():
+        # ✅ 감정 정보를 안전하게 추출
+        emotions_text = get_emotion_text(row)
+
         response_list.append(
             PerfumeRecommendItem(
-                name=row["name"],
-                brand=row["brand"],
-                image_url=row["image_url"],
-                notes=row["notes"],
-                emotions=row["emotion_tags"],
+                name=str(row["name"]),
+                brand=str(row["brand"]),
+                image_url=str(row["image_url"]),
+                notes=str(row["notes"]),
+                emotions=emotions_text,
                 reason=f"추천 이유: 모델 예측 점수 {row['score']:.3f}"
             )
         )
 
+    logger.info(f"[PERFUME] 응답 생성 완료: {len(response_list)}개 향수")
     return response_list
