@@ -1,5 +1,5 @@
 # ✅ 핵심 AI 라이브러리
-tensorflow==2.15.0
+tensorflow==2.10.0
 numpy==1.24.3
 scikit-learn==1.3.2
 pandas==2.1.4
