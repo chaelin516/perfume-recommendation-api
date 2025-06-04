@@ -1,11 +1,15 @@
 import os
 import math
 import logging
+import pickle
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import List, Literal
 import pandas as pd
 import json
+import numpy as np
+from sklearn.preprocessing import OneHotEncoder
+from tensorflow.keras.models import load_model
 
 # ─── 로거 설정 ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -34,19 +38,68 @@ except Exception as e:
     logger.error(f"store_data.json 로드 중 오류: {e}")
     raise RuntimeError(f"store_data.json 로드 중 오류: {e}")
 
-# ─── 3. 성별 매핑 함수 ───────────────────────────────────────────────────────────────
-def map_gender_for_perfume(request_gender: str) -> str:
+# ─── 3. 모델 및 인코더 로드 (recommend_router.py와 동일한 로직) ─────────────────────────────
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "../models/final_model_perfume.keras")
+ENCODER_PATH = os.path.join(os.path.dirname(__file__), "../models/encoder.pkl")
+
+# 전역 변수(lazy loading)
+_model = None
+
+
+def get_model():
+    global _model
+    if _model is None:
+        try:
+            _model = load_model(MODEL_PATH)
+            logger.info("Keras 모델 로드 성공")
+        except Exception as e:
+            logger.error(f"Keras 모델 로드 중 오류: {e}")
+            raise RuntimeError(f"Keras 모델 로드 중 오류: {e}")
+    return _model
+
+
+# encoder.pkl 로드 함수
+def get_saved_encoder():
+    try:
+        with open(ENCODER_PATH, "rb") as f:
+            encoder = pickle.load(f)
+        logger.info("encoder.pkl 로드 성공")
+        return encoder
+    except Exception as e:
+        logger.error(f"encoder.pkl 로드 중 오류: {e}")
+        raise RuntimeError(f"encoder.pkl 로드 중 오류: {e}")
+
+
+# fallback OneHotEncoder: 카테고리 직접 선언, handle_unknown="ignore" 설정
+CATEGORIES = [
+    ["women", "men", "unisex"],  # gender
+    ["spring", "summer", "fall", "winter"],  # season
+    ["day", "night"],  # time
+    ["confident", "elegant", "pure", "friendly", "mysterious", "fresh"],  # impression
+    ["casual", "work", "date"],  # activity
+    ["hot", "cold", "rainy", "any"]  # weather
+]
+_fallback_encoder = OneHotEncoder(categories=CATEGORIES, handle_unknown="ignore", sparse=False)
+# 더미 데이터를 이용해 한 번 fit() 호출
+_fallback_encoder.fit([
+    ["women", "spring", "day", "confident", "casual", "hot"],
+    ["men", "summer", "night", "elegant", "work", "cold"]
+])
+
+
+# ─── 4. 성별 매핑 함수 (수정됨) ──────────────────────────────────────────────────────
+def map_gender_for_model(request_gender: str) -> str:
     """
-    요청에서 받은 'male'/'female' 값을 perfume_df의 'men'/'women' 컬럼 값으로 매핑합니다.
-    'unisex'는 그대로 'unisex'로 유지합니다.
+    요청에서 받은 'male'/'female' 값을 모델이 기대하는 'men'/'women' 값으로 매핑합니다.
     """
     if request_gender == "female":
         return "women"
-    if request_gender == "male":
+    elif request_gender == "male":
         return "men"
     return "unisex"
 
-# ─── 4. 거리 계산 (Haversine) 함수 ──────────────────────────────────────────────────
+
+# ─── 5. 거리 계산 (Haversine) 함수 ──────────────────────────────────────────────────
 def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """
     두 위도/경도 지점 간의 거리를 킬로미터 단위로 계산합니다.
@@ -59,114 +112,213 @@ def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-# ─── 5. 요청(Request) 스키마 정의 ────────────────────────────────────────────────────
+
+# ─── 6. 요청(Request) 스키마 정의 (수정됨 - 모델 입력에 맞춤) ────────────────────────────
 class CourseRecommendRequest(BaseModel):
     gender: Literal["male", "female", "unisex"]
-    emotion: Literal["confident", "elegant", "pure", "friendly", "mysterious", "fresh"]
     season: Literal["spring", "summer", "fall", "winter"]
     time: Literal["day", "night"]
-    activity: Literal["casual", "work", "date"] = Field(
-        ..., description="현재는 필터링에 사용되지 않음"
-    )
+    impression: Literal["confident", "elegant", "pure", "friendly", "mysterious", "fresh"]
+    activity: Literal["casual", "work", "date"]
+    weather: Literal["hot", "cold", "rainy", "any"]
     latitude: float = Field(..., description="사용자 현재 위도")
     longitude: float = Field(..., description="사용자 현재 경도")
 
-# ─── 6. 코스 추천 결과 아이템 스키마 ───────────────────────────────────────────────
+
+# ─── 7. 코스 추천 결과 아이템 스키마 (개선됨) ──────────────────────────────────────────
+class RecommendedPerfume(BaseModel):
+    name: str
+    brand: str
+    image_url: str
+    score: float
+    reason: str
+
+
 class CourseItem(BaseModel):
     store_name: str
     store_address: str
     store_latitude: float
     store_longitude: float
-    recommended_perfumes: List[str]
+    distance_km: float
+    recommended_perfumes: List[RecommendedPerfume]
+
 
 class CourseRecommendResponse(BaseModel):
     message: str
+    total_stores: int
+    recommended_perfumes_count: int
     data: List[CourseItem]
 
+
 router = APIRouter(prefix="/courses", tags=["Course"])
+
 
 @router.post(
     "/recommend",
     response_model=CourseRecommendResponse,
-    summary="향수 코스 추천",
+    summary="AI 모델 기반 향수 코스 추천",
     description=(
-        "gender, emotion, season, time, activity, latitude, longitude 정보를 받아\n"
-        "1) perfume_final_dataset.csv에서 조건(gender, emotion, season, time)에 맞는 향수를 필터링,\n"
-        "2) 상위 5개의 향수를 선택하고,\n"
-        "3) 사용자의 위치로부터 반경 1.5km 이내 매장을 찾아 해당 매장별로 추천 향수 목록을 묶어서 반환합니다.\n\n"
-        "※ activity 필드는 현재 필터링에 사용되지 않으며, 향수 데이터셋에도 activity_tags 컬럼이 없어 제외되었습니다."
+            "사용자의 취향(gender, season, time, impression, activity, weather)과 위치 정보를 받아\n"
+            "1) 학습된 AI 모델(final_model_perfume.keras)로 향수 추천 점수를 계산하고,\n"
+            "2) 상위 점수의 향수들을 선택한 후,\n"
+            "3) 사용자 위치 기준 반경 5km 이내 매장들과 매칭하여 시향 코스를 추천합니다.\n\n"
+            "각 매장별로 추천 향수와 점수, 추천 이유를 제공합니다."
     )
 )
 def recommend_course(request: CourseRecommendRequest):
     logger.info(f"[COURSE] 요청 파라미터: "
-                f"gender={request.gender}, emotion={request.emotion}, season={request.season}, "
-                f"time={request.time}, activity={request.activity}, "
+                f"gender={request.gender}, season={request.season}, time={request.time}, "
+                f"impression={request.impression}, activity={request.activity}, weather={request.weather}, "
                 f"latitude={request.latitude}, longitude={request.longitude}")
 
-    # 1) 성별 매핑: 'female' → 'women', 'male' → 'men', 'unisex' → 'unisex'
-    mapped_gender = map_gender_for_perfume(request.gender)
-    logger.info(f"[COURSE] 매핑된 gender: {mapped_gender}")
-
-    # 2) perfume 후보 필터링
-    #    실제 perfume_final_dataset.csv 컬럼: ['name','brand','image_url','gender','notes',
-    #                                        'emotion_tags','season_tags','time_tags','brand_tag']
     try:
-        candidates = perfume_df[
-            (perfume_df["gender"] == mapped_gender)
-            & (perfume_df["season_tags"].str.contains(request.season, na=False))
-            & (perfume_df["time_tags"].str.contains(request.time, na=False))
-            & (perfume_df["emotion_tags"].str.contains(request.emotion, na=False))
+        # ─── 1. 모델 입력 준비 ──────────────────────────────────────────────────────
+        # 성별 매핑: 'female' → 'women', 'male' → 'men'
+        mapped_gender = map_gender_for_model(request.gender)
+        logger.info(f"[COURSE] 매핑된 gender: {mapped_gender}")
+
+        # 모델 입력 특성 구성 (recommend_router.py와 동일한 순서)
+        raw_features = [
+            mapped_gender,  # gender
+            request.season,  # season
+            request.time,  # time
+            request.impression,  # impression (desired_impression)
+            request.activity,  # activity
+            request.weather  # weather
         ]
-    except Exception as e:
-        logger.error(f"[COURSE] 향수 후보 필터링 오류: {e}")
-        raise HTTPException(status_code=500, detail=f"향수 후보 필터링 중 오류가 발생했습니다: {e}")
 
-    logger.info(f"[COURSE] 필터링된 향수 후보 개수: {len(candidates)}")
-    if candidates.empty:
-        logger.info("[COURSE] 후보 향수가 없어 빈 결과 반환")
-        return CourseRecommendResponse(message="향수 코스 추천 성공", data=[])
+        logger.info(f"[COURSE] 모델 입력 특성: {raw_features}")
 
-    # 3) 상위 5개 향수(예시)만 추출 (필요 시 모델 점수 기반으로 수정 가능)
-    top_perfumes = candidates["name"].tolist()[:5]
-    logger.info(f"[COURSE] 상위 추천 향수(최대 5개): {top_perfumes}")
+        # ─── 2. 특성 인코딩 (encoder.pkl 우선, 실패시 fallback) ──────────────────────
+        use_fallback = False
+        try:
+            encoder = get_saved_encoder()
+            x_input = encoder.transform([raw_features])
+            logger.info("[COURSE] encoder.pkl 사용하여 전처리 성공")
+        except Exception as e:
+            logger.warning(f"[COURSE] encoder.pkl 전처리 실패: {e} → fallback 사용")
+            use_fallback = True
 
-    # 4) 위치 기반 가까운 매장 찾기 (반경 1.5km)
-    user_lat = request.latitude
-    user_lng = request.longitude
-    radius_km = 1.5
-    nearby_stores = []
+        if use_fallback:
+            try:
+                x_input = _fallback_encoder.transform([raw_features])
+                logger.info("[COURSE] fallback OneHotEncoder 사용하여 전처리 성공")
+            except Exception as e:
+                logger.error(f"[COURSE] fallback 전처리 중 오류: {e}")
+                raise HTTPException(status_code=400, detail=f"입력값 전처리 중 오류: {e}")
 
-    for store in store_data:
-        store_lat = store.get("lat")
-        store_lng = store.get("lng")
-        distance = haversine(user_lat, user_lng, store_lat, store_lng)
-        logger.info(f"[COURSE] 매장명={store.get('name')} 거리={distance:.2f}km")
-        if distance <= radius_km:
-            nearby_stores.append({
-                "store_name": store.get("name"),
-                "store_address": store.get("address"),
-                "store_latitude": store_lat,
-                "store_longitude": store_lng,
-                "recommended_perfumes": top_perfumes
-            })
+        # ─── 3. AI 모델 예측 ───────────────────────────────────────────────────────
+        try:
+            model = get_model()
+            predictions = model.predict(x_input)  # shape: (1, num_perfumes)
+            scores = predictions.flatten()  # shape: (num_perfumes,)
+            logger.info(f"[COURSE] 모델 예측 성공, 점수 범위: {scores.min():.4f} ~ {scores.max():.4f}")
+        except Exception as e:
+            logger.error(f"[COURSE] 모델 예측 중 오류: {e}")
+            raise HTTPException(status_code=500, detail=f"모델 예측 중 오류: {e}")
 
-    logger.info(f"[COURSE] 반경 {radius_km}km 내 매장 개수: {len(nearby_stores)}")
-    if not nearby_stores:
-        logger.info("[COURSE] 인근 매장이 없어 빈 결과 반환")
-        return CourseRecommendResponse(message="향수 코스 추천 성공", data=[])
+        # ─── 4. 모델 출력과 데이터 크기 검증 ──────────────────────────────────────────
+        if len(scores) != len(perfume_df):
+            logger.error(f"[COURSE] 크기 불일치: 모델 출력 {len(scores)} vs 데이터 {len(perfume_df)}")
+            raise HTTPException(
+                status_code=500,
+                detail="모델 출력 크기가 향수 데이터와 일치하지 않습니다."
+            )
 
-    # 5) CourseItem 객체로 변환
-    response_items: List[CourseItem] = []
-    for store in nearby_stores:
-        response_items.append(
-            CourseItem(
+        # ─── 5. 향수 데이터에 점수 추가 및 정렬 ─────────────────────────────────────────
+        perfume_with_scores = perfume_df.copy()
+        perfume_with_scores["ai_score"] = scores
+
+        # 점수 순으로 내림차순 정렬하여 상위 향수 선택
+        top_perfumes = perfume_with_scores.sort_values(by="ai_score", ascending=False).head(10)
+        logger.info(
+            f"[COURSE] 상위 10개 향수 선정 완료 (점수: {top_perfumes['ai_score'].iloc[0]:.4f} ~ {top_perfumes['ai_score'].iloc[-1]:.4f})")
+
+        # ─── 6. 위치 기반 매장 필터링 ──────────────────────────────────────────────────
+        user_lat = request.latitude
+        user_lng = request.longitude
+        radius_km = 5.0  # 반경 5km로 확장
+
+        nearby_stores = []
+        for store in store_data:
+            store_lat = store.get("lat")
+            store_lng = store.get("lng")
+
+            if store_lat is None or store_lng is None:
+                logger.warning(f"[COURSE] 매장 {store.get('name')}의 좌표 정보 누락")
+                continue
+
+            distance = haversine(user_lat, user_lng, store_lat, store_lng)
+
+            if distance <= radius_km:
+                # 각 매장에서 판매하는 향수와 추천 향수 매칭
+                store_perfumes = store.get("perfumes", [])
+                matched_perfumes = []
+
+                for _, perfume_row in top_perfumes.iterrows():
+                    perfume_name = perfume_row["name"]
+                    if perfume_name in store_perfumes:
+                        matched_perfumes.append(RecommendedPerfume(
+                            name=perfume_name,
+                            brand=perfume_row["brand"],
+                            image_url=perfume_row["image_url"],
+                            score=round(float(perfume_row["ai_score"]), 4),
+                            reason=f"AI 모델 추천 점수 {perfume_row['ai_score']:.4f} - {request.impression} 인상에 최적"
+                        ))
+
+                if matched_perfumes:  # 매칭되는 향수가 있는 매장만 추가
+                    nearby_stores.append({
+                        "store_name": store.get("name", "Unknown Store"),
+                        "store_address": store.get("address", "Unknown Address"),
+                        "store_latitude": store_lat,
+                        "store_longitude": store_lng,
+                        "distance_km": round(distance, 2),
+                        "recommended_perfumes": matched_perfumes
+                    })
+                    logger.info(
+                        f"[COURSE] 매장 추가: {store.get('name')} (거리: {distance:.2f}km, 향수: {len(matched_perfumes)}개)")
+
+        logger.info(f"[COURSE] 반경 {radius_km}km 내 추천 가능한 매장: {len(nearby_stores)}개")
+
+        # ─── 7. 응답 데이터 구성 ───────────────────────────────────────────────────────
+        if not nearby_stores:
+            logger.info("[COURSE] 추천 가능한 매장이 없음")
+            return CourseRecommendResponse(
+                message="주변에 추천 향수를 판매하는 매장이 없습니다. 검색 반경을 늘려보세요.",
+                total_stores=0,
+                recommended_perfumes_count=0,
+                data=[]
+            )
+
+        # 거리순으로 정렬
+        nearby_stores.sort(key=lambda x: x["distance_km"])
+
+        # CourseItem 객체로 변환
+        course_items = []
+        total_perfumes = 0
+        for store in nearby_stores:
+            course_item = CourseItem(
                 store_name=store["store_name"],
                 store_address=store["store_address"],
                 store_latitude=store["store_latitude"],
                 store_longitude=store["store_longitude"],
+                distance_km=store["distance_km"],
                 recommended_perfumes=store["recommended_perfumes"]
             )
+            course_items.append(course_item)
+            total_perfumes += len(store["recommended_perfumes"])
+
+        logger.info(f"[COURSE] 최종 응답: {len(course_items)}개 매장, {total_perfumes}개 추천 향수")
+
+        return CourseRecommendResponse(
+            message=f"AI 모델 기반 향수 코스 추천이 완료되었습니다. 반경 {radius_km}km 내 {len(course_items)}개 매장에서 {total_perfumes}개의 향수를 확인하실 수 있습니다.",
+            total_stores=len(course_items),
+            recommended_perfumes_count=total_perfumes,
+            data=course_items
         )
 
-    logger.info(f"[COURSE] 최종 반환될 코스 개수: {len(response_items)}")
-    return CourseRecommendResponse(message="향수 코스 추천 성공", data=response_items)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[COURSE] 예상치 못한 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"코스 추천 중 오류가 발생했습니다: {str(e)}")
