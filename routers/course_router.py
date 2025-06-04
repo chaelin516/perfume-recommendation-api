@@ -11,7 +11,6 @@ import numpy as np
 from sklearn.preprocessing import OneHotEncoder
 from tensorflow.keras.models import load_model
 
-
 # ─── 로거 설정 ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -19,25 +18,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger("course_router")
 
-# ─── 1. perfume_final_dataset.csv 로드 ───────────────────────────────────────────────
+# ─── 1. 파일 경로 설정 ───────────────────────────────────────────────
 PERFUME_CSV_PATH = os.path.join(os.path.dirname(__file__), "../data/perfume_final_dataset.csv")
-try:
-    perfume_df = pd.read_csv(PERFUME_CSV_PATH)
-    perfume_df.fillna("", inplace=True)
-    logger.info(f"Perfume dataset loaded: {perfume_df.shape[0]} rows, columns: {list(perfume_df.columns)}")
-except Exception as e:
-    logger.error(f"perfume_final_dataset.csv 로드 중 오류: {e}")
-    raise RuntimeError(f"perfume_final_dataset.csv 로드 중 오류: {e}")
-
-# ─── 2. store_data.json 로드 ─────────────────────────────────────────────────────────
 STORE_JSON_PATH = os.path.join(os.path.dirname(__file__), "../data/store_data.json")
-try:
-    with open(STORE_JSON_PATH, "r", encoding="utf-8") as f:
-        store_data = json.load(f)
-    logger.info(f"Store data loaded: {len(store_data)} entries")
-except Exception as e:
-    logger.error(f"store_data.json 로드 중 오류: {e}")
-    raise RuntimeError(f"store_data.json 로드 중 오류: {e}")
+
+
+# ─── 2. 데이터 로딩 함수들 (lazy loading) ─────────────────────────────────────────
+def load_perfume_data():
+    """향수 데이터 로드 (필요시에만)"""
+    try:
+        perfume_df = pd.read_csv(PERFUME_CSV_PATH)
+        perfume_df.fillna("", inplace=True)
+        logger.info(f"Perfume dataset loaded: {perfume_df.shape[0]} rows, columns: {list(perfume_df.columns)}")
+        return perfume_df
+    except Exception as e:
+        logger.error(f"perfume_final_dataset.csv 로드 중 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"향수 데이터 로드 실패: {e}")
+
+
+def load_store_data():
+    """매장 데이터 로드 (필요시에만)"""
+    try:
+        with open(STORE_JSON_PATH, "r", encoding="utf-8") as f:
+            store_data = json.load(f)
+        logger.info(f"Store data loaded: {len(store_data)} entries")
+        return store_data
+    except Exception as e:
+        logger.error(f"store_data.json 로드 중 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"매장 데이터 로드 실패: {e}")
+
 
 # ─── 3. 모델 및 인코더 로드 (recommend_router.py와 동일한 로직) ─────────────────────────────
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "../models/final_model_perfume.keras")
@@ -55,7 +64,7 @@ def get_model():
             logger.info("Keras 모델 로드 성공")
         except Exception as e:
             logger.error(f"Keras 모델 로드 중 오류: {e}")
-            raise RuntimeError(f"Keras 모델 로드 중 오류: {e}")
+            raise HTTPException(status_code=500, detail=f"AI 모델 로드 실패: {e}")
     return _model
 
 
@@ -68,7 +77,7 @@ def get_saved_encoder():
         return encoder
     except Exception as e:
         logger.error(f"encoder.pkl 로드 중 오류: {e}")
-        raise RuntimeError(f"encoder.pkl 로드 중 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"인코더 로드 실패: {e}")
 
 
 # fallback OneHotEncoder: 카테고리 직접 선언, handle_unknown="ignore" 설정
@@ -173,6 +182,10 @@ def recommend_course(request: CourseRecommendRequest):
                 f"latitude={request.latitude}, longitude={request.longitude}")
 
     try:
+        # ─── 0. 데이터 로드 ──────────────────────────────────────────────────────
+        perfume_df = load_perfume_data()
+        store_data = load_store_data()
+
         # ─── 1. 모델 입력 준비 ──────────────────────────────────────────────────────
         # 성별 매핑: 'female' → 'women', 'male' → 'men'
         mapped_gender = map_gender_for_model(request.gender)
