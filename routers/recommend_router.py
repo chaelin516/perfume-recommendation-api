@@ -407,37 +407,76 @@ def rule_based_recommendation(request_data: dict, top_k: int = 10) -> List[dict]
             else:
                 candidates = df.sample(n=min(top_k, len(df)), random_state=42)
 
-        # 점수 계산 (더 정교한 로직)
+        # 점수 계산 (더 정교하고 다양한 로직)
         candidates = candidates.copy()
         scores = []
 
-        for _, row in candidates.iterrows():
-            score = 0.5  # 기본 점수
+        # 브랜드별 가중치 (인기 브랜드 예시)
+        popular_brands = ['Creed', 'Tom Ford', 'Chanel', 'Dior', 'Jo Malone', 'Diptyque']
 
-            # 조건 일치도에 따른 점수 부여
-            if 'gender' in row and row['gender'] == mapped_gender:
-                score += 0.2
+        for idx, (_, row) in enumerate(candidates.iterrows()):
+            score = 0.3  # 더 낮은 기본 점수
 
-            if 'season_tags' in row and season.lower() in str(row['season_tags']).lower():
+            # 1. 조건 일치도 점수 (이미 필터링되었으므로 세밀한 차이)
+            brand_name = str(row.get('brand', ''))
+            notes_text = str(row.get('notes', ''))
+
+            # 브랜드 인기도 보너스
+            if any(popular in brand_name for popular in popular_brands):
                 score += 0.15
 
-            if 'time_tags' in row and time.lower() in str(row['time_tags']).lower():
-                score += 0.15
-
-            if 'desired_impression' in row and impression.lower() in str(row['desired_impression']).lower():
-                score += 0.25
-
-            if 'activity' in row and activity.lower() in str(row['activity']).lower():
-                score += 0.1
-
-            if 'weather' in row and (weather == 'any' or weather.lower() in str(row['weather']).lower()):
+            # 노트 복잡성 (더 많은 노트 = 더 복잡한 향수)
+            note_count = len([n.strip() for n in notes_text.split(',') if n.strip()])
+            if note_count >= 8:
+                score += 0.10
+            elif note_count >= 5:
                 score += 0.05
 
-            # 랜덤 요소 추가 (다양성 확보)
-            score += random.uniform(-0.1, 0.1)
+            # 텍스트 매칭 정확도 (부분 매칭)
+            impression_match_count = 0
+            if 'desired_impression' in row:
+                impressions = str(row['desired_impression']).lower().split(',')
+                impression_match_count = sum(1 for imp in impressions if impression.lower() in imp.strip())
+                score += impression_match_count * 0.08
 
-            # 점수 정규화
-            score = max(0.0, min(1.0, score))
+            # 계절/시간 매칭 정확도
+            if 'season_tags' in row:
+                season_tags = str(row['season_tags']).lower()
+                if season.lower() in season_tags:
+                    # 정확한 단어 매칭 시 더 높은 점수
+                    if f' {season.lower()} ' in f' {season_tags} ':
+                        score += 0.12
+                    else:
+                        score += 0.08
+
+            if 'time_tags' in row:
+                time_tags = str(row['time_tags']).lower()
+                if time.lower() in time_tags:
+                    if f' {time.lower()} ' in f' {time_tags} ':
+                        score += 0.12
+                    else:
+                        score += 0.08
+
+            # 활동 매칭
+            if 'activity' in row and activity.lower() in str(row['activity']).lower():
+                score += 0.08
+
+            # 날씨 매칭
+            if 'weather' in row and weather != 'any':
+                if weather.lower() in str(row['weather']).lower():
+                    score += 0.06
+            elif weather == 'any':
+                score += 0.03  # any weather는 작은 보너스
+
+            # 다양성을 위한 위치 기반 점수 (앞쪽일수록 약간 높은 점수)
+            position_bonus = (len(candidates) - idx) / len(candidates) * 0.05
+            score += position_bonus
+
+            # 랜덤 요소 (더 큰 범위로 다양성 확보)
+            score += random.uniform(-0.15, 0.15)
+
+            # 점수 정규화 (0.2 ~ 0.95 범위)
+            score = max(0.2, min(0.95, score))
             scores.append(score)
 
         candidates['score'] = scores
@@ -446,7 +485,9 @@ def rule_based_recommendation(request_data: dict, top_k: int = 10) -> List[dict]
         top_candidates = candidates.nlargest(top_k, 'score')
 
         logger.info(f"✅ 룰 기반 추천 완료: 최종 {len(top_candidates)}개 선택")
-        logger.info(f"📊 평균 점수: {top_candidates['score'].mean():.3f}")
+        if not top_candidates.empty:
+            logger.info(f"📊 점수 범위: {top_candidates['score'].min():.3f} ~ {top_candidates['score'].max():.3f}")
+            logger.info(f"📊 평균 점수: {top_candidates['score'].mean():.3f}")
 
         return top_candidates.to_dict('records')
 
@@ -557,6 +598,7 @@ def recommend_perfumes(request: RecommendRequest):
 
     # 1) AI 모델 시도
     if _model_available:
+        model_start_time = datetime.now()
         try:
             logger.info("🤖 AI 모델 추천 시도")
 
@@ -597,23 +639,32 @@ def recommend_perfumes(request: RecommendRequest):
                     top_10 = df_with_scores.sort_values(by="score", ascending=False).head(10)
 
                     method_used = f"AI 모델 + {encoder_method}"
-                    logger.info(f"✅ AI 모델 추천 성공 (방법: {method_used})")
+                    model_time = (datetime.now() - model_start_time).total_seconds()
+                    logger.info(f"✅ AI 모델 추천 성공 (방법: {method_used}, 소요시간: {model_time:.3f}초)")
                 else:
                     raise Exception(f"모델 출력 크기 불일치: {len(scores)} != {len(df)}")
             else:
                 raise Exception("모델 로드 실패")
 
         except Exception as e:
-            logger.warning(f"⚠️ AI 모델 추천 실패: {e}")
+            model_time = (datetime.now() - model_start_time).total_seconds()
+            logger.warning(f"⚠️ AI 모델 추천 실패 (소요시간: {model_time:.3f}초): {e}")
             logger.info("📋 룰 기반 추천으로 전환")
+
+            rule_start_time = datetime.now()
             rule_results = rule_based_recommendation(request_dict, 10)
             top_10 = pd.DataFrame(rule_results)
+            rule_time = (datetime.now() - rule_start_time).total_seconds()
             method_used = "룰 기반 (AI 모델 실패)"
+            logger.info(f"📋 룰 기반 추천 완료 (소요시간: {rule_time:.3f}초)")
     else:
         logger.info("📋 룰 기반 추천 사용 (모델 파일 없음)")
+        rule_start_time = datetime.now()
         rule_results = rule_based_recommendation(request_dict, 10)
         top_10 = pd.DataFrame(rule_results)
+        rule_time = (datetime.now() - rule_start_time).total_seconds()
         method_used = "룰 기반 (모델 없음)"
+        logger.info(f"📋 룰 기반 추천 완료 (소요시간: {rule_time:.3f}초)")
 
     # 2) 결과 가공
     response_list: List[PerfumeRecommendItem] = []
@@ -621,11 +672,19 @@ def recommend_perfumes(request: RecommendRequest):
         emotions_text = get_emotion_text(row)
         score = float(row.get('score', 0.0))
 
-        # 추천 이유 생성
-        if "AI 모델" in method_used:
+        # 추천 이유 생성 (method_used 정확히 확인)
+        if method_used.startswith("AI 모델"):
             reason = f"AI 모델이 당신의 취향을 분석하여 {score:.1%} 확률로 선택했습니다."
         else:
-            reason = f"룰 기반 분석으로 조건 일치도 {score:.1%}점을 획득했습니다."
+            # 점수에 따른 다양한 메시지
+            if score >= 0.8:
+                reason = f"조건 완벽 일치 (일치도 {score:.1%}) - 강력 추천!"
+            elif score >= 0.6:
+                reason = f"조건 높은 일치 (일치도 {score:.1%}) - 추천!"
+            elif score >= 0.4:
+                reason = f"조건 적합 (일치도 {score:.1%}) - 고려 해보세요."
+            else:
+                reason = f"새로운 스타일 제안 (일치도 {score:.1%}) - 도전해보세요!"
 
         response_list.append(
             PerfumeRecommendItem(
@@ -641,10 +700,12 @@ def recommend_perfumes(request: RecommendRequest):
         )
 
     # 처리 시간 계산
-    processing_time = (datetime.now() - request_start_time).total_seconds()
+    total_processing_time = (datetime.now() - request_start_time).total_seconds()
 
     logger.info(f"✅ 향수 추천 완료: {len(response_list)}개 ({method_used})")
-    logger.info(f"⏱️ 처리 시간: {processing_time:.3f}초")
+    logger.info(f"⏱️ 총 처리 시간: {total_processing_time:.3f}초")
+    logger.info(
+        f"📊 점수 범위: {min(item.score for item in response_list):.3f} ~ {max(item.score for item in response_list):.3f}")
     logger.info(f"📊 평균 점수: {sum(item.score for item in response_list) / len(response_list):.3f}")
 
     return response_list
