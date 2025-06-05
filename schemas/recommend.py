@@ -3,9 +3,9 @@ from typing import Literal, List
 
 class RecommendRequest(BaseModel):
     gender: Literal['women', 'men', 'unisex']
-    season: Literal['spring', 'summer', 'fall', 'winter']
-    time: Literal['day', 'night']
-    impression: Literal['confident', 'elegant', 'pure', 'friendly', 'mysterious', 'fresh']
+    season_tags: Literal['spring', 'summer', 'fall', 'winter']
+    time_tags: Literal['day', 'night']
+    desired_impression: Literal['confident', 'elegant', 'pure', 'friendly', 'mysterious', 'fresh']
     activity: Literal['casual', 'work', 'date']
     weather: Literal['hot', 'cold', 'rainy', 'any']
 

@@ -265,9 +265,9 @@ def get_fallback_encoder():
 
             CATEGORIES = [
                 ["women", "men", "unisex"],  # gender
-                ["spring", "summer", "fall", "winter"],  # season
-                ["day", "night"],  # time
-                ["confident", "elegant", "pure", "friendly", "mysterious", "fresh"],  # impression
+                ["spring", "summer", "fall", "winter"],  # season_tags
+                ["day", "night"],  # time_tags
+                ["confident", "elegant", "pure", "friendly", "mysterious", "fresh"],  # desired_impression
                 ["casual", "work", "date"],  # activity
                 ["hot", "cold", "rainy", "any"]  # weather
             ]
@@ -311,9 +311,9 @@ def predict_with_emotion_cluster_model(request_dict: dict) -> pd.DataFrame:
         # 인코더로 입력 데이터 변환
         raw_features = [
             request_dict["gender"],
-            request_dict["season"],
-            request_dict["time"],
-            request_dict["impression"],
+            request_dict["season_tags"],
+            request_dict["time_tags"],
+            request_dict["desired_impression"],
             request_dict["activity"],
             request_dict["weather"]
         ]
@@ -392,23 +392,23 @@ def predict_with_emotion_cluster_model(request_dict: dict) -> pd.DataFrame:
         if 'season_tags' in cluster_perfumes.columns:
             season_filtered = cluster_perfumes[
                 cluster_perfumes['season_tags'].str.contains(
-                    request_dict["season"], na=False, case=False
+                    request_dict["season_tags"], na=False, case=False
                 )
             ]
             if not season_filtered.empty:
                 cluster_perfumes = season_filtered
-                logger.info(f"  계절 '{request_dict['season']}' 필터링: → {len(cluster_perfumes)}개")
+                logger.info(f"  계절 '{request_dict['season_tags']}' 필터링: → {len(cluster_perfumes)}개")
 
         # 시간 필터링
         if 'time_tags' in cluster_perfumes.columns:
             time_filtered = cluster_perfumes[
                 cluster_perfumes['time_tags'].str.contains(
-                    request_dict["time"], na=False, case=False
+                    request_dict["time_tags"], na=False, case=False
                 )
             ]
             if not time_filtered.empty:
                 cluster_perfumes = time_filtered
-                logger.info(f"  시간 '{request_dict['time']}' 필터링: → {len(cluster_perfumes)}개")
+                logger.info(f"  시간 '{request_dict['time_tags']}' 필터링: → {len(cluster_perfumes)}개")
 
         # AI 신뢰도 기반 점수 할당
         cluster_perfumes = cluster_perfumes.copy()
@@ -421,11 +421,11 @@ def predict_with_emotion_cluster_model(request_dict: dict) -> pd.DataFrame:
             score = base_score
 
             # 추가 조건 일치 보너스
-            if 'season_tags' in row and request_dict["season"].lower() in str(row['season_tags']).lower():
+            if 'season_tags' in row and request_dict["season_tags"].lower() in str(row['season_tags']).lower():
                 score += 0.08
-            if 'time_tags' in row and request_dict["time"].lower() in str(row['time_tags']).lower():
+            if 'time_tags' in row and request_dict["time_tags"].lower() in str(row['time_tags']).lower():
                 score += 0.06
-            if 'desired_impression' in row and request_dict["impression"].lower() in str(
+            if 'desired_impression' in row and request_dict["desired_impression"].lower() in str(
                     row['desired_impression']).lower():
                 score += 0.05
 
@@ -470,14 +470,14 @@ def rule_based_recommendation(request_data: dict, top_k: int = 10) -> List[dict]
     try:
         # 필터링 조건
         gender = request_data["gender"]
-        season = request_data["season"]
-        time = request_data["time"]
-        impression = request_data["impression"]
+        season_tags = request_data["season_tags"]
+        time_tags = request_data["time_tags"]
+        desired_impression = request_data["desired_impression"]
         activity = request_data["activity"]
         weather = request_data["weather"]
 
-        logger.info(f"🔍 필터링 조건: gender={gender}, season={season}, time={time}, "
-                    f"impression={impression}, activity={activity}, weather={weather}")
+        logger.info(f"🔍 필터링 조건: gender={gender}, season_tags={season_tags}, time_tags={time_tags}, "
+                    f"desired_impression={desired_impression}, activity={activity}, weather={weather}")
 
         # 성별 매핑
         gender_map = {"women": "women", "men": "men", "unisex": "unisex"}
@@ -497,29 +497,29 @@ def rule_based_recommendation(request_data: dict, top_k: int = 10) -> List[dict]
         # 계절 필터링
         if 'season_tags' in df.columns:
             season_filtered = candidates[
-                candidates['season_tags'].str.contains(season, na=False, case=False)
+                candidates['season_tags'].str.contains(season_tags, na=False, case=False)
             ]
             if not season_filtered.empty:
                 candidates = season_filtered
-                logger.info(f"  계절 '{season}' 필터링: → {len(candidates)}개")
+                logger.info(f"  계절 '{season_tags}' 필터링: → {len(candidates)}개")
 
         # 시간 필터링
         if 'time_tags' in df.columns:
             time_filtered = candidates[
-                candidates['time_tags'].str.contains(time, na=False, case=False)
+                candidates['time_tags'].str.contains(time_tags, na=False, case=False)
             ]
             if not time_filtered.empty:
                 candidates = time_filtered
-                logger.info(f"  시간 '{time}' 필터링: → {len(candidates)}개")
+                logger.info(f"  시간 '{time_tags}' 필터링: → {len(candidates)}개")
 
         # 인상 필터링
         if 'desired_impression' in df.columns:
             impression_filtered = candidates[
-                candidates['desired_impression'].str.contains(impression, na=False, case=False)
+                candidates['desired_impression'].str.contains(desired_impression, na=False, case=False)
             ]
             if not impression_filtered.empty:
                 candidates = impression_filtered
-                logger.info(f"  인상 '{impression}' 필터링: → {len(candidates)}개")
+                logger.info(f"  인상 '{desired_impression}' 필터링: → {len(candidates)}개")
 
         # 활동 필터링 (있는 경우)
         if 'activity' in df.columns:
@@ -588,19 +588,19 @@ def rule_based_recommendation(request_data: dict, top_k: int = 10) -> List[dict]
             impression_match_count = 0
             if 'desired_impression' in row:
                 impressions = str(row['desired_impression']).lower().split(',')
-                impression_match_count = sum(1 for imp in impressions if impression.lower() in imp.strip())
+                impression_match_count = sum(1 for imp in impressions if desired_impression.lower() in imp.strip())
                 score += impression_match_count * 0.08
 
             # 계절/시간 매칭 정확도
             if 'season_tags' in row:
-                season_tags = str(row['season_tags']).lower()
-                if season.lower() in season_tags:
-                    score += 0.12 if f' {season.lower()} ' in f' {season_tags} ' else 0.08
+                season_tags_data = str(row['season_tags']).lower()
+                if season_tags.lower() in season_tags_data:
+                    score += 0.12 if f' {season_tags.lower()} ' in f' {season_tags_data} ' else 0.08
 
             if 'time_tags' in row:
-                time_tags = str(row['time_tags']).lower()
-                if time.lower() in time_tags:
-                    score += 0.12 if f' {time.lower()} ' in f' {time_tags} ' else 0.08
+                time_tags_data = str(row['time_tags']).lower()
+                if time_tags.lower() in time_tags_data:
+                    score += 0.12 if f' {time_tags.lower()} ' in f' {time_tags_data} ' else 0.08
 
             # 활동 매칭
             if 'activity' in row and activity.lower() in str(row['activity']).lower():
@@ -690,9 +690,9 @@ def get_recommendation_reason(score: float, method: str) -> str:
 # ─── 10. 스키마 정의 ────────────────────────────────────────────────
 class RecommendRequest(BaseModel):
     gender: Literal["women", "men", "unisex"]
-    season: Literal["spring", "summer", "fall", "winter"]
-    time: Literal["day", "night"]
-    impression: Literal["confident", "elegant", "pure", "friendly", "mysterious", "fresh"]
+    season_tags: Literal["spring", "summer", "fall", "winter"]
+    time_tags: Literal["day", "night"]
+    desired_impression: Literal["confident", "elegant", "pure", "friendly", "mysterious", "fresh"]
     activity: Literal["casual", "work", "date"]
     weather: Literal["hot", "cold", "rainy", "any"]
 
@@ -735,9 +735,9 @@ logger.info("✅ 추천 시스템 초기화 완료")
             "3. **다양성 보장**: 브랜드별 균형 잡힌 추천\n\n"
             "**📋 입력 파라미터:**\n"
             "- `gender`: 성별 (women/men/unisex)\n"
-            "- `season`: 계절 (spring/summer/fall/winter)\n"
-            "- `time`: 시간대 (day/night)\n"
-            "- `impression`: 원하는 인상 (confident/elegant/pure/friendly/mysterious/fresh)\n"
+            "- `season_tags`: 계절 (spring/summer/fall/winter)\n"
+            "- `time_tags`: 시간대 (day/night)\n"
+            "- `desired_impression`: 원하는 인상 (confident/elegant/pure/friendly/mysterious/fresh)\n"
             "- `activity`: 활동 (casual/work/date)\n"
             "- `weather`: 날씨 (hot/cold/rainy/any)\n\n"
             "**🧠 AI 모델 세부사항:**\n"
@@ -983,9 +983,9 @@ def health_check():
     try:
         test_request = {
             "gender": "women",
-            "season": "spring",
-            "time": "day",
-            "impression": "fresh",
+            "season_tags": "spring",
+            "time_tags": "day",
+            "desired_impression": "fresh",
             "activity": "casual",
             "weather": "any"
         }
@@ -1041,9 +1041,9 @@ def test_recommendation_system():
             "name": "여성용 봄 데이 향수",
             "request": {
                 "gender": "women",
-                "season": "spring",
-                "time": "day",
-                "impression": "fresh",
+                "season_tags": "spring",
+                "time_tags": "day",
+                "desired_impression": "fresh",
                 "activity": "casual",
                 "weather": "any"
             }
@@ -1052,9 +1052,9 @@ def test_recommendation_system():
             "name": "남성용 겨울 나이트 향수",
             "request": {
                 "gender": "men",
-                "season": "winter",
-                "time": "night",
-                "impression": "confident",
+                "season_tags": "winter",
+                "time_tags": "night",
+                "desired_impression": "confident",
                 "activity": "date",
                 "weather": "cold"
             }
@@ -1063,9 +1063,9 @@ def test_recommendation_system():
             "name": "유니섹스 여름 향수",
             "request": {
                 "gender": "unisex",
-                "season": "summer",
-                "time": "day",
-                "impression": "mysterious",
+                "season_tags": "summer",
+                "time_tags": "day",
+                "desired_impression": "mysterious",
                 "activity": "work",
                 "weather": "hot"
             }
