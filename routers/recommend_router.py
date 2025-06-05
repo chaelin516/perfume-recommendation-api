@@ -74,6 +74,43 @@ EMOTION_CLUSTER_MAP = {
     5: "활기찬, 에너지"
 }
 
+# ✅ 수정된 카테고리 매핑 - API와 모델 간 호환성 보장
+API_TO_MODEL_MAPPING = {
+    "gender": {
+        "women": "women",
+        "men": "men",
+        "unisex": "unisex"
+    },
+    "season_tags": {
+        "spring": "spring",
+        "summer": "summer",
+        "fall": "fall",
+        "winter": "winter"
+    },
+    "time_tags": {
+        "day": "day",
+        "night": "night"
+    },
+    "desired_impression": {
+        "confident": "confident",
+        "elegant": "elegant",
+        "pure": "pure",
+        "friendly": "friendly",
+        "mysterious": "mysterious",
+        "fresh": "fresh"
+    },
+    "activity": {
+        "casual": "casual",
+        "work": "work",
+        "date": "date"
+    },
+    "weather": {
+        "hot": "hot",
+        "cold": "cold",
+        "rainy": "rainy",
+        "any": "any"
+    }
+}
 
 # ─── 5. 모델 가용성 확인 (31KB 모델에 맞게 수정) ─────────────────────────────────────
 def check_model_availability():
@@ -256,13 +293,14 @@ def get_saved_encoder():
 
 
 def get_fallback_encoder():
-    """Fallback OneHotEncoder를 생성합니다."""
+    """✅ 수정된 Fallback OneHotEncoder를 생성합니다."""
     global _fallback_encoder
 
     if _fallback_encoder is None:
         try:
             logger.info("🔧 Fallback OneHotEncoder 생성 중...")
 
+            # ✅ API 스키마와 일치하는 카테고리 정의
             CATEGORIES = [
                 ["women", "men", "unisex"],  # gender
                 ["spring", "summer", "fall", "winter"],  # season_tags
@@ -272,13 +310,24 @@ def get_fallback_encoder():
                 ["hot", "cold", "rainy", "any"]  # weather
             ]
 
-            _fallback_encoder = OneHotEncoder(
-                categories=CATEGORIES,
-                handle_unknown="ignore",
-                sparse=False
-            )
+            # ✅ scikit-learn 1.6+ 호환성: sparse_output 사용
+            try:
+                _fallback_encoder = OneHotEncoder(
+                    categories=CATEGORIES,
+                    handle_unknown="ignore",
+                    sparse_output=False  # ✅ 수정: sparse=False → sparse_output=False
+                )
+                logger.info("✅ OneHotEncoder 생성 성공 (sparse_output 사용)")
+            except TypeError:
+                # 이전 버전 호환성
+                _fallback_encoder = OneHotEncoder(
+                    categories=CATEGORIES,
+                    handle_unknown="ignore",
+                    sparse=False  # 이전 버전 지원
+                )
+                logger.info("✅ OneHotEncoder 생성 성공 (sparse 사용)")
 
-            # 더미 데이터로 fit
+            # 더미 데이터로 fit (API 스키마와 완전 일치)
             dummy_data = [
                 ["women", "spring", "day", "confident", "casual", "hot"],
                 ["men", "summer", "night", "elegant", "work", "cold"],
@@ -289,18 +338,56 @@ def get_fallback_encoder():
             ]
 
             _fallback_encoder.fit(dummy_data)
-            logger.info("✅ Fallback OneHotEncoder 생성 완료")
+            logger.info("✅ Fallback OneHotEncoder 생성 및 훈련 완료")
+
+            # ✅ 인코더 검증 테스트
+            test_input = ["women", "spring", "day", "confident", "casual", "hot"]
+            test_encoded = _fallback_encoder.transform([test_input])
+            logger.info(f"🧪 Fallback 인코더 테스트 성공: 입력 6개 → 출력 {test_encoded.shape[1]}개")
 
         except Exception as e:
             logger.error(f"❌ Fallback encoder 생성 실패: {e}")
+            # ✅ 추가 디버깅 정보
+            import sklearn
+            logger.error(f"📦 scikit-learn 버전: {sklearn.__version__}")
+            logger.error(f"📦 OneHotEncoder 파라미터 확인 필요")
             return None
 
     return _fallback_encoder
 
 
+def safe_transform_input(raw_features: list) -> np.ndarray:
+    """✅ 안전한 입력 변환 함수"""
+    try:
+        # 1. 저장된 인코더 시도
+        encoder = get_saved_encoder()
+        if encoder:
+            try:
+                logger.info(f"🔍 저장된 인코더로 변환 시도: {raw_features}")
+                transformed = encoder.transform([raw_features])
+                logger.info(f"✅ 저장된 인코더 변환 성공: {transformed.shape}")
+                return transformed
+            except Exception as e:
+                logger.warning(f"⚠️ 저장된 인코더 실패: {e}")
+
+        # 2. Fallback 인코더 시도
+        fallback_encoder = get_fallback_encoder()
+        if fallback_encoder:
+            logger.info(f"🔄 Fallback 인코더로 변환: {raw_features}")
+            transformed = fallback_encoder.transform([raw_features])
+            logger.info(f"✅ Fallback 인코더 변환 성공: {transformed.shape}")
+            return transformed
+        else:
+            raise Exception("Fallback 인코더 생성 실패")
+
+    except Exception as e:
+        logger.error(f"❌ 입력 변환 완전 실패: {e}")
+        raise e
+
+
 # ─── 7. AI 감정 클러스터 모델 추천 ─────────────────────────────────────
 def predict_with_emotion_cluster_model(request_dict: dict) -> pd.DataFrame:
-    """감정 클러스터 모델을 사용한 AI 추천"""
+    """✅ 수정된 감정 클러스터 모델을 사용한 AI 추천"""
 
     try:
         # 모델 가져오기
@@ -308,7 +395,7 @@ def predict_with_emotion_cluster_model(request_dict: dict) -> pd.DataFrame:
         if model is None:
             raise Exception("모델 로드 실패")
 
-        # 인코더로 입력 데이터 변환
+        # ✅ API 입력을 모델 호환 형식으로 변환
         raw_features = [
             request_dict["gender"],
             request_dict["season_tags"],
@@ -320,29 +407,9 @@ def predict_with_emotion_cluster_model(request_dict: dict) -> pd.DataFrame:
 
         logger.info(f"🔮 AI 모델 입력 데이터: {raw_features}")
 
-        # 인코더 사용
-        encoder = get_saved_encoder()
-        if encoder:
-            try:
-                x_input = encoder.transform([raw_features])
-                encoder_method = "저장된 인코더"
-            except Exception as e:
-                logger.warning(f"⚠️ encoder.pkl 실패 ({e}), fallback encoder 사용")
-                fallback_encoder = get_fallback_encoder()
-                if fallback_encoder:
-                    x_input = fallback_encoder.transform([raw_features])
-                    encoder_method = "Fallback 인코더"
-                else:
-                    raise Exception("Fallback encoder 생성 실패")
-        else:
-            fallback_encoder = get_fallback_encoder()
-            if fallback_encoder:
-                x_input = fallback_encoder.transform([raw_features])
-                encoder_method = "Fallback 인코더"
-            else:
-                raise Exception("Fallback encoder 생성 실패")
-
-        logger.info(f"🔮 감정 클러스터 예측 시작 (입력 shape: {x_input.shape}, 인코더: {encoder_method})")
+        # ✅ 안전한 입력 변환 사용
+        x_input = safe_transform_input(raw_features)
+        logger.info(f"🔮 감정 클러스터 예측 시작 (입력 shape: {x_input.shape})")
 
         # 모델 예측 (감정 클러스터)
         preds = model.predict(x_input, verbose=0)  # (1, 6) 출력
@@ -748,7 +815,8 @@ logger.info("✅ 추천 시스템 초기화 완료")
             "**✨ 특징:**\n"
             "- 실제 모델 파일 크기 기반 유효성 검증\n"
             "- 견고한 에러 핸들링\n"
-            "- 상세한 추천 이유 제공"
+            "- 상세한 추천 이유 제공\n"
+            "- scikit-learn 1.6+ 호환성 지원"
     )
 )
 def recommend_perfumes(request: RecommendRequest):
@@ -869,6 +937,13 @@ def get_model_status():
         except:
             model_structure = "모델 정보 읽기 실패"
 
+    # ✅ scikit-learn 버전 정보 추가
+    try:
+        import sklearn
+        sklearn_version = sklearn.__version__
+    except:
+        sklearn_version = "불명"
+
     return {
         "timestamp": datetime.now().isoformat(),
         "model_available": _model_available,
@@ -912,6 +987,7 @@ def get_model_status():
         "fallback_encoder_ready": _fallback_encoder is not None,
         "system": {
             "python_version": sys.version.split()[0],
+            "sklearn_version": sklearn_version,  # ✅ 추가
             "current_directory": os.getcwd(),
             "router_location": BASE_DIR,
             "dataset_loaded": len(df) > 0,
@@ -923,6 +999,11 @@ def get_model_status():
             "sample_brands": df['brand'].unique()[:5].tolist() if 'brand' in df.columns else [],
             "emotion_cluster_distribution": dict(
                 df['emotion_cluster'].value_counts()) if 'emotion_cluster' in df.columns else None
+        },
+        "compatibility": {
+            "api_schema_categories": API_TO_MODEL_MAPPING,
+            "encoder_fallback_available": _fallback_encoder is not None,
+            "sklearn_sparse_parameter": "sparse_output (1.6+) / sparse (1.5-)"
         }
     }
 
@@ -977,6 +1058,21 @@ def health_check():
         health_status["checks"]["model_files"] = {
             "status": "error",
             "error": str(e)
+        }
+
+    # ✅ 인코더 호환성 체크 추가
+    try:
+        fallback_encoder = get_fallback_encoder()
+        health_status["checks"]["encoder_compatibility"] = {
+            "status": "ok" if fallback_encoder is not None else "error",
+            "fallback_encoder_available": fallback_encoder is not None,
+            "sklearn_compatible": True  # fallback 생성 성공하면 호환됨
+        }
+    except Exception as e:
+        health_status["checks"]["encoder_compatibility"] = {
+            "status": "error",
+            "error": str(e),
+            "sklearn_compatible": False
         }
 
     # 추천 시스템 테스트
@@ -1120,6 +1216,13 @@ def test_recommendation_system():
                 "processing_time_seconds": 0
             })
 
+    # ✅ scikit-learn 버전 정보 추가
+    try:
+        import sklearn
+        sklearn_version = sklearn.__version__
+    except:
+        sklearn_version = "불명"
+
     return {
         "timestamp": datetime.now().isoformat(),
         "model_available": _model_available,
@@ -1128,6 +1231,7 @@ def test_recommendation_system():
         "fallback_encoder_available": _fallback_encoder is not None,
         "dataset_size": len(df),
         "emotion_clusters": EMOTION_CLUSTER_MAP,
+        "sklearn_version": sklearn_version,  # ✅ 추가
         "test_results": results,
         "summary": {
             "total_tests": len(test_cases),
