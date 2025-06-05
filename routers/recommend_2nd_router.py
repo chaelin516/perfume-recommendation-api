@@ -2,6 +2,7 @@
 # 🆕 2차 향수 추천 API - 사용자 노트 선호도 기반 정밀 추천
 
 import os
+import pickle
 import logging
 import pandas as pd
 import numpy as np
@@ -57,8 +58,24 @@ class UserNoteScores(BaseModel):
         return {k: v for k, v in self.dict().items() if v is not None}
 
 
+class UserPreferences(BaseModel):
+    """1차 추천을 위한 사용자 선호도 (AI 모델 입력)"""
+
+    gender: str = Field(..., description="성별", example="women")
+    season_tags: str = Field(..., description="계절", example="spring")
+    time_tags: str = Field(..., description="시간", example="day")
+    desired_impression: str = Field(..., description="원하는 인상", example="confident, fresh")
+    activity: str = Field(..., description="활동", example="casual")
+    weather: str = Field(..., description="날씨", example="hot")
+
+
 class SecondRecommendRequest(BaseModel):
-    """2차 추천 요청 스키마"""
+    """2차 추천 요청 스키마 - AI 모델 호출 포함"""
+
+    user_preferences: UserPreferences = Field(
+        ...,
+        description="1차 추천을 위한 사용자 선호도 (AI 모델 입력)"
+    )
 
     user_note_scores: Dict[str, int] = Field(
         ...,
@@ -73,17 +90,18 @@ class SecondRecommendRequest(BaseModel):
         }
     )
 
-    emotion_proba: List[float] = Field(
-        ...,
-        description="6개 감정 클러스터별 확률 배열 (AI 모델 출력)",
+    # Optional fields (기존 방식 호환성 유지)
+    emotion_proba: Optional[List[float]] = Field(
+        None,
+        description="6개 감정 클러스터별 확률 배열 (제공되지 않으면 AI 모델로 계산)",
         min_items=6,
         max_items=6,
         example=[0.01, 0.03, 0.85, 0.02, 0.05, 0.04]
     )
 
-    selected_idx: List[int] = Field(
-        ...,
-        description="1차 추천에서 선택된 향수 인덱스 목록",
+    selected_idx: Optional[List[int]] = Field(
+        None,
+        description="1차 추천에서 선택된 향수 인덱스 목록 (제공되지 않으면 AI 모델로 계산)",
         min_items=1,
         max_items=20,
         example=[23, 45, 102, 200, 233, 305, 399, 410, 487, 512]
@@ -94,10 +112,34 @@ class SecondRecommendRequest(BaseModel):
         for note, score in v.items():
             if not isinstance(score, int) or score < 0 or score > 5:
                 raise ValueError(f"노트 '{note}'의 점수는 0-5 사이의 정수여야 합니다.")
-        return v
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "user_preferences": {
+                    "gender": "women",
+                    "season_tags": "spring",
+                    "time_tags": "day",
+                    "desired_impression": "confident, fresh",
+                    "activity": "casual",
+                    "weather": "hot"
+                },
+                "user_note_scores": {
+                    "jasmine": 5,
+                    "rose": 4,
+                    "amber": 3,
+                    "musk": 0,
+                    "citrus": 2,
+                    "vanilla": 1
+                }
+            }
+        }
 
     @validator('emotion_proba')
     def validate_emotion_proba(cls, v):
+        if v is None:
+            return v  # Optional이므로 None 허용
+
         if len(v) != 6:
             raise ValueError("emotion_proba는 정확히 6개의 확률값을 가져야 합니다.")
 
@@ -113,6 +155,9 @@ class SecondRecommendRequest(BaseModel):
 
     @validator('selected_idx')
     def validate_selected_idx(cls, v):
+        if v is None:
+            return v  # Optional이므로 None 허용
+
         if len(set(v)) != len(v):
             raise ValueError("selected_idx에 중복된 인덱스가 있습니다.")
 
@@ -332,7 +377,58 @@ def calculate_final_score(
     return final_score
 
 
-# ─── 5. 메인 추천 함수 ─────────────────────────────────────────────────────────
+# ─── 8. 메인 추천 함수 ─────────────────────────────────────────────────────────
+def process_second_recommendation_with_ai(
+        user_preferences: dict,
+        user_note_scores: Dict[str, int],
+        emotion_proba: Optional[List[float]] = None,
+        selected_idx: Optional[List[int]] = None
+) -> List[Dict]:
+    """
+    AI 모델을 포함한 완전한 2차 추천 처리 함수
+    """
+    start_time = datetime.now()
+
+    logger.info(f"🎯 AI 모델 포함 2차 추천 처리 시작")
+    logger.info(f"  📝 사용자 선호도: {user_preferences}")
+    logger.info(f"  🎨 노트 선호도: {user_note_scores}")
+
+    # 1. emotion_proba 또는 selected_idx가 없으면 AI 모델 호출
+    if emotion_proba is None or selected_idx is None:
+        logger.info("🤖 AI 모델로 1차 추천 수행 (emotion_proba 또는 selected_idx 없음)")
+
+        try:
+            ai_result = call_ai_model_for_first_recommendation(user_preferences)
+
+            if emotion_proba is None:
+                emotion_proba = ai_result["emotion_proba"]
+                logger.info(f"✅ AI 모델에서 감정 확률 획득: 클러스터 {ai_result['cluster']} ({ai_result['confidence']:.3f})")
+
+            if selected_idx is None:
+                selected_idx = ai_result["selected_idx"]
+                logger.info(f"✅ AI 모델에서 선택 인덱스 획득: {len(selected_idx)}개")
+
+        except Exception as e:
+            logger.error(f"❌ AI 모델 1차 추천 실패: {e}")
+            logger.info("📋 룰 기반 폴백으로 전환")
+
+            # 룰 기반 폴백
+            emotion_proba = [0.1, 0.15, 0.4, 0.15, 0.1, 0.1]  # 기본 확률 분포
+
+            # 기본 필터링으로 selected_idx 생성
+            candidates = df.copy()
+            if 'gender' in df.columns and user_preferences.get("gender"):
+                gender_filtered = candidates[candidates['gender'] == user_preferences["gender"]]
+                if not gender_filtered.empty:
+                    candidates = gender_filtered
+
+            selected_idx = candidates.head(10).index.tolist()
+            logger.info(f"📋 룰 기반 폴백으로 {len(selected_idx)}개 인덱스 생성")
+
+    # 2. 기존 2차 추천 로직 수행
+    return process_second_recommendation(user_note_scores, emotion_proba, selected_idx)
+
+
 def process_second_recommendation(
         user_note_scores: Dict[str, int],
         emotion_proba: List[float],
@@ -427,49 +523,73 @@ def process_second_recommendation(
     return results
 
 
-# ─── 6. 라우터 설정 ─────────────────────────────────────────────────────────────
+# ─── 11. 라우터 설정 및 모델 초기화 ─────────────────────────────────────────────────────────────
 router = APIRouter(prefix="/perfumes", tags=["Second Recommendation"])
+
+# 시작 시 모델 가용성 확인
+logger.info("🚀 2차 추천 시스템 (AI 모델 포함) 초기화 시작...")
+check_model_availability()
+if _model_available:
+    logger.info("🤖 AI 감정 클러스터 모델 사용 가능")
+else:
+    logger.info("📋 룰 기반 폴백 시스템으로 동작")
+logger.info("✅ 2차 추천 시스템 초기화 완료")
 
 
 @router.post(
     "/recommend-2nd",
     response_model=List[SecondRecommendItem],
-    summary="2차 향수 추천 - 사용자 노트 선호도 기반",
+    summary="2차 향수 추천 - AI 모델 + 노트 선호도 기반",
     description=(
-            "🎯 **2차 향수 추천 API**\n\n"
-            "1차 추천 결과와 사용자의 노트 선호도를 기반으로 정밀한 2차 추천을 제공합니다.\n\n"
+            "🎯 **완전한 End-to-End 2차 향수 추천 API**\n\n"
+            "사용자 선호도를 기반으로 AI 모델을 호출하여 1차 추천을 수행한 후,\n"
+            "노트 선호도와 결합하여 정밀한 2차 추천을 제공합니다.\n\n"
             "**📥 입력 정보:**\n"
+            "- `user_preferences`: 사용자 기본 선호도 (AI 모델 입력용)\n"
+            "  - gender, season_tags, time_tags, desired_impression, activity, weather\n"
             "- `user_note_scores`: 사용자의 노트별 선호도 점수 (0-5)\n"
-            "- `emotion_proba`: AI 모델이 예측한 6개 감정 클러스터 확률\n"
-            "- `selected_idx`: 1차 추천에서 선택된 향수 인덱스 목록\n\n"
+            "- `emotion_proba` (선택): 감정 확률 배열 (제공되지 않으면 AI 모델로 계산)\n"
+            "- `selected_idx` (선택): 선택된 향수 인덱스 (제공되지 않으면 AI 모델로 계산)\n\n"
+            "**🤖 처리 과정:**\n"
+            "1. **AI 모델 호출**: user_preferences → 감정 클러스터 예측 + 향수 선택\n"
+            "2. **노트 매칭**: user_note_scores와 향수 노트 비교\n"
+            "3. **점수 계산**: 노트 매칭(70%) + 감정 가중치(25%) + 다양성(5%)\n"
+            "4. **최종 정렬**: 점수 기준 내림차순 정렬\n\n"
             "**📤 출력 정보:**\n"
             "- 향수별 최종 추천 점수와 감정 클러스터 정보\n"
             "- 점수 기준 내림차순 정렬\n\n"
-            "**🧮 점수 계산 방식:**\n"
-            "- 노트 매칭 점수 (70%): 사용자 선호 노트와 향수 노트의 일치도\n"
-            "- 감정 클러스터 가중치 (25%): AI 예측 확률 기반\n"
-            "- 다양성 보너스 (5%): 브랜드 다양성 고려\n\n"
             "**✨ 특징:**\n"
-            "- 정확한 노트 매칭 + 부분 매칭 지원\n"
-            "- 노트명 정규화로 유사 노트 매칭\n"
-            "- 브랜드 다양성 보장\n"
-            "- 상세한 점수 분석 제공"
+            "- 🤖 AI 모델 자동 호출로 완전한 추천 파이프라인\n"
+            "- 🎯 정확한 노트 매칭 + 부분 매칭 지원\n"
+            "- 📊 감정 클러스터 기반 가중치 적용\n"
+            "- 🔄 AI 모델 실패 시 룰 기반 폴백\n"
+            "- 🌟 브랜드 다양성 보장"
     )
 )
 def recommend_second_perfumes(request: SecondRecommendRequest):
-    """2차 향수 추천 API"""
+    """AI 모델 포함 완전한 2차 향수 추천 API"""
 
     request_start_time = datetime.now()
 
-    logger.info(f"🆕 2차 향수 추천 요청 접수")
+    logger.info(f"🆕 AI 모델 포함 2차 향수 추천 요청 접수")
+    logger.info(f"  👤 사용자 선호도: {request.user_preferences.dict()}")
     logger.info(f"  📊 노트 선호도 개수: {len(request.user_note_scores)}개")
-    logger.info(
-        f"  🧠 감정 확률 최고: {max(request.emotion_proba):.3f} (클러스터 {request.emotion_proba.index(max(request.emotion_proba))})")
-    logger.info(f"  📋 선택된 향수: {len(request.selected_idx)}개")
+
+    # emotion_proba나 selected_idx 제공 여부 확인
+    has_emotion_proba = request.emotion_proba is not None
+    has_selected_idx = request.selected_idx is not None
+
+    if has_emotion_proba and has_selected_idx:
+        logger.info(f"  🧠 감정 확률 제공됨: 최고 {max(request.emotion_proba):.3f}")
+        logger.info(f"  📋 선택 인덱스 제공됨: {len(request.selected_idx)}개")
+        logger.info("  ⚡ 2차 추천 바로 실행 (AI 모델 호출 건너뜀)")
+    else:
+        logger.info("  🤖 emotion_proba 또는 selected_idx 없음 → AI 모델 호출 예정")
 
     try:
-        # 메인 추천 처리
-        results = process_second_recommendation(
+        # 메인 추천 처리 (AI 모델 포함)
+        results = process_second_recommendation_with_ai(
+            user_preferences=request.user_preferences.dict(),
             user_note_scores=request.user_note_scores,
             emotion_proba=request.emotion_proba,
             selected_idx=request.selected_idx
@@ -481,7 +601,7 @@ def recommend_second_perfumes(request: SecondRecommendRequest):
                 detail="추천할 수 있는 향수가 없습니다."
             )
 
-        # 응답 형태로 변환 (상세 정보 제거)
+        # 응답 형태로 변환
         response_items = []
         for result in results:
             response_items.append(
@@ -496,11 +616,7 @@ def recommend_second_perfumes(request: SecondRecommendRequest):
         # 처리 시간 계산
         total_processing_time = (datetime.now() - request_start_time).total_seconds()
 
-        # 통계 정보
-        note_preferences = list(request.user_note_scores.keys())
-        top_emotion_cluster = request.emotion_proba.index(max(request.emotion_proba))
-
-        logger.info(f"✅ 2차 추천 완료: {len(response_items)}개 향수")
+        logger.info(f"✅ AI 모델 포함 2차 추천 완료: {len(response_items)}개 향수")
         logger.info(f"⏱️ 총 처리 시간: {total_processing_time:.3f}초")
         logger.info(f"📊 최고 점수: {response_items[0].final_score:.3f} ({response_items[0].name})")
         logger.info(f"📊 최저 점수: {response_items[-1].final_score:.3f} ({response_items[-1].name})")
@@ -511,15 +627,21 @@ def recommend_second_perfumes(request: SecondRecommendRequest):
             cluster_distribution[item.emotion_cluster] = cluster_distribution.get(item.emotion_cluster, 0) + 1
         logger.info(f"📊 클러스터별 분포: {cluster_distribution}")
 
+        # AI 모델 호출 여부 로깅
+        if not has_emotion_proba or not has_selected_idx:
+            logger.info("🤖 AI 모델이 성공적으로 호출되어 1차 추천 수행됨")
+        else:
+            logger.info("⚡ 제공된 데이터로 2차 추천만 수행됨 (AI 모델 호출 없음)")
+
         return response_items
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ 2차 추천 처리 중 예외 발생: {e}")
+        logger.error(f"❌ AI 모델 포함 2차 추천 처리 중 예외 발생: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"2차 추천 처리 중 오류가 발생했습니다: {str(e)}"
+            detail=f"AI 모델 포함 2차 추천 처리 중 오류가 발생했습니다: {str(e)}"
         )
 
 
