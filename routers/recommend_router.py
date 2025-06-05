@@ -62,7 +62,6 @@ ENCODER_PATH = os.path.join(BASE_DIR, "../models/encoder.pkl")
 _model = None
 _encoder = None
 _model_available = False
-_model_availability_reason = "초기화되지 않음"
 _fallback_encoder = None
 
 # ─── 4. 감정 클러스터 매핑 ─────────────────────────────────────
@@ -76,255 +75,157 @@ EMOTION_CLUSTER_MAP = {
 }
 
 
-# ─── 5. 향상된 모델 가용성 확인 ─────────────────────────────────────
+# ─── 5. 모델 가용성 확인 (31KB 모델에 맞게 수정) ─────────────────────────────────────
 def check_model_availability():
-    """모델 파일들의 가용성을 상세히 확인합니다."""
-    global _model_available, _model_availability_reason
+    """모델 파일들의 가용성을 확인합니다."""
+    global _model_available
 
-    logger.info("🔍 모델 파일 상세 진단 시작...")
-    logger.info(f"📂 현재 작업 디렉토리: {os.getcwd()}")
-    logger.info(f"📂 라우터 파일 위치: {BASE_DIR}")
-
-    # 상위 디렉토리 구조 확인
-    parent_dir = os.path.dirname(BASE_DIR)
-    logger.info(f"📂 프로젝트 루트 디렉토리: {parent_dir}")
-
-    # models 디렉토리 확인
-    models_dir = os.path.join(parent_dir, "models")
-    logger.info(f"📂 모델 디렉토리 경로: {models_dir}")
-    logger.info(f"📂 모델 디렉토리 존재 여부: {os.path.exists(models_dir)}")
-
-    if os.path.exists(models_dir):
-        try:
-            files_in_models = os.listdir(models_dir)
-            logger.info(f"📋 models 디렉토리 내 파일 목록: {files_in_models}")
-        except PermissionError:
-            logger.error(f"❌ models 디렉토리 읽기 권한 없음: {models_dir}")
-        except Exception as e:
-            logger.error(f"❌ models 디렉토리 읽기 오류: {e}")
-    else:
-        logger.warning(f"⚠️ models 디렉토리가 존재하지 않음: {models_dir}")
+    logger.info("🔍 모델 파일 가용성 확인 중...")
 
     try:
-        # === 1. 모델 파일 상세 확인 ===
-        logger.info(f"🔍 모델 파일 확인: {MODEL_PATH}")
-
+        # 파일 존재 및 크기 확인
         model_exists = os.path.exists(MODEL_PATH)
-        logger.info(f"📄 모델 파일 존재: {'✅' if model_exists else '❌'}")
+        encoder_exists = os.path.exists(ENCODER_PATH)
+
+        model_valid = False
+        encoder_valid = False
 
         if model_exists:
-            try:
-                model_size = os.path.getsize(MODEL_PATH)
-                model_size_mb = model_size / (1024 * 1024)
-                logger.info(f"📏 모델 파일 크기: {model_size:,} bytes ({model_size_mb:.2f} MB)")
-
-                # 파일 권한 확인
-                readable = os.access(MODEL_PATH, os.R_OK)
-                logger.info(f"🔐 모델 파일 읽기 권한: {'✅' if readable else '❌'}")
-
-                # 파일 크기 유효성
-                MIN_MODEL_SIZE = 100000  # 100KB
-                model_size_valid = model_size > MIN_MODEL_SIZE
-                logger.info(f"📐 모델 파일 크기 유효성 (>{MIN_MODEL_SIZE:,}B): {'✅' if model_size_valid else '❌'}")
-
-                if not model_size_valid:
-                    logger.warning(f"⚠️ 모델 파일이 너무 작습니다. 예상 최소 크기: {MIN_MODEL_SIZE:,}B, 실제: {model_size:,}B")
-
-                if not readable:
-                    logger.error(f"❌ 모델 파일 읽기 권한이 없습니다: {MODEL_PATH}")
-
-            except OSError as e:
-                logger.error(f"❌ 모델 파일 정보 읽기 실패: {e}")
-                model_size_valid = False
-                readable = False
+            model_size = os.path.getsize(MODEL_PATH)
+            # ✅ 실제 모델 파일 크기에 맞게 수정: 31KB 모델이므로 10KB 이상으로 체크
+            model_valid = model_size > 10000  # 10KB 이상 (기존: 100KB)
+            logger.info(f"📄 모델 파일: {model_size:,}B ({model_size / 1024:.1f}KB) {'✅' if model_valid else '❌'}")
         else:
-            logger.warning(f"⚠️ 모델 파일이 존재하지 않습니다: {MODEL_PATH}")
-            model_size_valid = False
-            readable = False
-
-        # === 2. 인코더 파일 상세 확인 ===
-        logger.info(f"🔍 인코더 파일 확인: {ENCODER_PATH}")
-
-        encoder_exists = os.path.exists(ENCODER_PATH)
-        logger.info(f"📄 인코더 파일 존재: {'✅' if encoder_exists else '❌'}")
+            logger.warning(f"⚠️ 모델 파일이 없습니다: {MODEL_PATH}")
 
         if encoder_exists:
-            try:
-                encoder_size = os.path.getsize(ENCODER_PATH)
-                encoder_size_kb = encoder_size / 1024
-                logger.info(f"📏 인코더 파일 크기: {encoder_size:,} bytes ({encoder_size_kb:.2f} KB)")
-
-                # 파일 권한 확인
-                encoder_readable = os.access(ENCODER_PATH, os.R_OK)
-                logger.info(f"🔐 인코더 파일 읽기 권한: {'✅' if encoder_readable else '❌'}")
-
-                # 파일 크기 유효성
-                MIN_ENCODER_SIZE = 100  # 100B
-                encoder_size_valid = encoder_size > MIN_ENCODER_SIZE
-                logger.info(f"📐 인코더 파일 크기 유효성 (>{MIN_ENCODER_SIZE}B): {'✅' if encoder_size_valid else '❌'}")
-
-                if not encoder_size_valid:
-                    logger.warning(f"⚠️ 인코더 파일이 너무 작습니다. 예상 최소 크기: {MIN_ENCODER_SIZE}B, 실제: {encoder_size}B")
-
-                if not encoder_readable:
-                    logger.error(f"❌ 인코더 파일 읽기 권한이 없습니다: {ENCODER_PATH}")
-
-            except OSError as e:
-                logger.error(f"❌ 인코더 파일 정보 읽기 실패: {e}")
-                encoder_size_valid = False
-                encoder_readable = False
+            encoder_size = os.path.getsize(ENCODER_PATH)
+            # ✅ 인코더는 1KB이므로 500B 이상으로 체크 (기존: 100B)
+            encoder_valid = encoder_size > 500  # 500B 이상
+            logger.info(f"📄 인코더 파일: {encoder_size:,}B ({encoder_size}B) {'✅' if encoder_valid else '❌'}")
         else:
-            logger.warning(f"⚠️ 인코더 파일이 존재하지 않습니다: {ENCODER_PATH}")
-            encoder_size_valid = False
-            encoder_readable = False
+            logger.warning(f"⚠️ 인코더 파일이 없습니다: {ENCODER_PATH}")
 
-        # === 3. TensorFlow 가용성 확인 ===
-        logger.info(f"🔍 TensorFlow 가용성 확인...")
-        tf_available = False
-        tf_version = "Unknown"
-        tf_error = None
+        _model_available = model_valid and encoder_valid
 
-        try:
-            import tensorflow as tf
-            tf_available = True
-            tf_version = tf.__version__
-            logger.info(f"✅ TensorFlow 사용 가능: v{tf_version}")
-        except ImportError as e:
-            tf_error = f"TensorFlow 가져오기 실패: {e}"
-            logger.error(f"❌ {tf_error}")
-        except Exception as e:
-            tf_error = f"TensorFlow 확인 중 오류: {e}"
-            logger.error(f"❌ {tf_error}")
-
-        # === 4. 최종 판정 ===
-        model_valid = model_exists and model_size_valid and readable
-        encoder_valid = encoder_exists and encoder_size_valid and encoder_readable
-
-        _model_available = model_valid and encoder_valid and tf_available
-
-        # 상세한 실패 사유 설정
-        if not _model_available:
-            reasons = []
-            if not model_exists:
-                reasons.append("모델 파일 없음")
-            elif not model_size_valid:
-                reasons.append("모델 파일 크기 부족")
-            elif not readable:
-                reasons.append("모델 파일 읽기 권한 없음")
-
-            if not encoder_exists:
-                reasons.append("인코더 파일 없음")
-            elif not encoder_size_valid:
-                reasons.append("인코더 파일 크기 부족")
-            elif not encoder_readable:
-                reasons.append("인코더 파일 읽기 권한 없음")
-
-            if not tf_available:
-                reasons.append(f"TensorFlow 사용 불가 ({tf_error})")
-
-            _model_availability_reason = "; ".join(reasons)
-        else:
-            _model_availability_reason = "모든 조건 만족"
-
-        # === 5. 최종 결과 로그 ===
-        logger.info(f"🎯 모델 가용성 최종 판정: {'✅ 사용 가능' if _model_available else '❌ 사용 불가'}")
-        logger.info(f"📋 판정 사유: {_model_availability_reason}")
+        logger.info(f"🤖 모델 가용성: {'✅ 사용 가능' if _model_available else '❌ 사용 불가'}")
 
         if _model_available:
-            logger.info(f"🤖 AI 감정 클러스터 모델을 사용합니다")
+            logger.info(f"✨ 모델 사용 준비 완료 - 크기: {model_size / 1024:.1f}KB")
         else:
-            logger.info(f"📋 룰 기반 추천 시스템을 사용합니다")
-
-        # === 6. 요약 정보 ===
-        logger.info(f"📊 모델 파일 상태 요약:")
-        logger.info(f"   - 모델 파일: {MODEL_PATH}")
-        logger.info(
-            f"     존재: {'✅' if model_exists else '❌'} | 크기 유효: {'✅' if model_size_valid else '❌'} | 읽기 가능: {'✅' if readable else '❌'}")
-        logger.info(f"   - 인코더 파일: {ENCODER_PATH}")
-        logger.info(
-            f"     존재: {'✅' if encoder_exists else '❌'} | 크기 유효: {'✅' if encoder_size_valid else '❌'} | 읽기 가능: {'✅' if encoder_readable else '❌'}")
-        logger.info(f"   - TensorFlow: {'✅' if tf_available else '❌'} (v{tf_version})")
+            if not model_valid:
+                logger.warning(f"⚠️ 모델 파일 크기 부족: {model_size}B (최소 10KB 필요)")
+            if not encoder_valid:
+                logger.warning(f"⚠️ 인코더 파일 크기 부족: {encoder_size}B (최소 500B 필요)")
 
         return _model_available
 
     except Exception as e:
-        logger.error(f"❌ 모델 가용성 확인 중 예외 발생: {e}")
-        logger.error(f"🔍 예외 상세: {type(e).__name__}: {str(e)}")
+        logger.error(f"❌ 모델 가용성 확인 중 오류: {e}")
         _model_available = False
-        _model_availability_reason = f"확인 중 예외 발생: {e}"
         return False
 
 
-def get_model_availability_info():
-    """현재 모델 가용성 정보를 반환합니다."""
-    return {
-        "available": _model_available,
-        "reason": _model_availability_reason,
-        "model_path": MODEL_PATH,
-        "encoder_path": ENCODER_PATH,
-        "model_exists": os.path.exists(MODEL_PATH),
-        "encoder_exists": os.path.exists(ENCODER_PATH),
-        "current_dir": os.getcwd(),
-        "router_dir": BASE_DIR
-    }
-
-
-# ─── 6. 모델 로딩 함수들 (향상된 로깅) ─────────────────────────────────────
+# ─── 6. 모델 로딩 함수들 (Keras 3.8.0 호환 및 크기 체크 수정) ─────────────────────────────────────
 def get_model():
     """Keras 감정 클러스터 모델을 로드합니다."""
     global _model
 
     if _model is None:
-        logger.info(f"🤖 Keras 모델 로딩 시도...")
-        logger.info(f"📂 모델 파일 경로: {MODEL_PATH}")
-
         try:
             if not os.path.exists(MODEL_PATH):
-                logger.error(f"❌ 모델 파일이 존재하지 않습니다: {MODEL_PATH}")
+                logger.warning(f"⚠️ 모델 파일이 없습니다: {MODEL_PATH}")
                 return None
 
-            # 파일 크기 재확인
+            # ✅ 파일 크기 확인 - 31KB 모델에 맞게 수정
             model_size = os.path.getsize(MODEL_PATH)
-            if model_size < 100000:  # 100KB 미만
-                logger.error(f"❌ 모델 파일이 너무 작습니다: {model_size} bytes")
+            if model_size < 10000:  # 10KB 미만 (기존: 100KB)
+                logger.warning(f"⚠️ 모델 파일이 너무 작습니다: {model_size} bytes ({model_size / 1024:.1f}KB)")
                 return None
 
-            # TensorFlow 동적 임포트
+            logger.info(f"📦 모델 파일 크기 확인 완료: {model_size:,}B ({model_size / 1024:.1f}KB)")
+
+            # TensorFlow 동적 임포트 및 Keras 3.x 호환성 고려
             try:
                 tf_start = datetime.now()
-                from tensorflow.keras.models import load_model
+
+                # ✅ Keras 3.x 지원을 위한 임포트 방식 개선
+                try:
+                    # Keras 3.x 방식 시도
+                    import tensorflow as tf
+                    from tensorflow import keras
+                    load_model = keras.models.load_model
+                    logger.info(f"📦 TensorFlow {tf.__version__} + Keras 3.x 스타일 로딩")
+                except:
+                    # 기존 방식 폴백
+                    from tensorflow.keras.models import load_model
+                    logger.info(f"📦 TensorFlow 기존 스타일 로딩")
+
                 tf_load_time = (datetime.now() - tf_start).total_seconds()
-                logger.info(f"📦 TensorFlow 로딩 완료 (소요시간: {tf_load_time:.3f}초)")
+
+                logger.info(f"📦 Keras 모델 로딩 시도 (TF 로딩: {tf_load_time:.3f}초)")
+                logger.info(f"📊 예상 모델 구조: 입력(6) → Dense(64,relu) → Dense(6,softmax)")
 
                 model_start = datetime.now()
-                _model = load_model(MODEL_PATH, compile=False)  # compile=False로 빠른 로딩
+
+                # ✅ compile=False로 빠른 로딩, Keras 3.x 호환
+                _model = load_model(MODEL_PATH, compile=False)
                 model_load_time = (datetime.now() - model_start).total_seconds()
 
-                # 모델 구조 확인
-                logger.info(f"✅ Keras 모델 로드 성공 (소요시간: {model_load_time:.3f}초)")
-                logger.info(f"📊 모델 입력 shape: {_model.input_shape}")
-                logger.info(f"📊 모델 출력 shape: {_model.output_shape}")
-                logger.info(f"📊 모델 레이어 수: {len(_model.layers)}")
-                logger.info(f"📊 모델 파라미터 수: {_model.count_params():,}")
+                # ✅ 모델 구조 검증
+                logger.info(f"✅ Keras 모델 로드 성공 (모델 로딩: {model_load_time:.3f}초)")
+                logger.info(f"📊 실제 모델 입력 shape: {_model.input_shape}")
+                logger.info(f"📊 실제 모델 출력 shape: {_model.output_shape}")
 
-                # 출력 크기 확인
+                # ✅ 레이어 정보 출력
+                logger.info(f"📊 모델 레이어 수: {len(_model.layers)}")
+                for i, layer in enumerate(_model.layers):
+                    layer_info = f"  Layer {i + 1}: {layer.__class__.__name__}"
+                    if hasattr(layer, 'units'):
+                        layer_info += f" (units: {layer.units})"
+                    if hasattr(layer, 'activation'):
+                        layer_info += f" (activation: {layer.activation.__name__})"
+                    logger.info(layer_info)
+
+                # ✅ 출력 크기 검증 (6개 감정 클러스터)
                 output_size = _model.output_shape[-1]
                 if output_size == 6:
-                    logger.info("🎯 감정 클러스터 분류 모델로 인식됨")
+                    logger.info("🎯 6개 감정 클러스터 분류 모델로 확인됨")
                 else:
                     logger.warning(f"⚠️ 예상과 다른 출력 크기: {output_size} (예상: 6)")
+
+                # ✅ 입력 크기 검증 (6개 특성)
+                input_size = _model.input_shape[-1]
+                if input_size == 6:
+                    logger.info("🎯 6개 입력 특성 모델로 확인됨")
+                else:
+                    logger.warning(f"⚠️ 예상과 다른 입력 크기: {input_size} (예상: 6)")
+
+                # ✅ 간단한 테스트 추론 (모델 동작 확인)
+                try:
+                    test_input = np.random.random((1, 6)).astype(np.float32)
+                    test_output = _model.predict(test_input, verbose=0)
+                    logger.info(f"🧪 테스트 추론 성공: 입력{test_input.shape} → 출력{test_output.shape}")
+                    logger.info(f"🧪 출력 합계: {test_output.sum():.3f} (softmax이면 ~1.0)")
+
+                    # 가장 높은 확률의 클러스터 확인
+                    predicted_cluster = int(np.argmax(test_output[0]))
+                    confidence = float(test_output[0][predicted_cluster])
+                    logger.info(f"🧪 테스트 예측: 클러스터 {predicted_cluster} (신뢰도: {confidence:.3f})")
+                except Exception as test_e:
+                    logger.warning(f"⚠️ 테스트 추론 실패: {test_e}")
 
             except ImportError as e:
                 logger.error(f"❌ TensorFlow를 찾을 수 없습니다: {e}")
                 return None
             except Exception as e:
                 logger.error(f"❌ Keras 모델 로드 실패: {e}")
-                logger.error(f"🔍 모델 로드 예외 상세: {type(e).__name__}: {str(e)}")
+                logger.error(f"  파일 경로: {MODEL_PATH}")
+                logger.error(f"  파일 크기: {model_size}B")
                 return None
 
         except Exception as e:
             logger.error(f"❌ 모델 로딩 중 예외: {e}")
-            logger.error(f"🔍 로딩 예외 상세: {type(e).__name__}: {str(e)}")
             return None
 
     return _model
@@ -335,42 +236,20 @@ def get_saved_encoder():
     global _encoder
 
     if _encoder is None:
-        logger.info(f"📦 인코더 로딩 시도...")
-        logger.info(f"📂 인코더 파일 경로: {ENCODER_PATH}")
-
         try:
             if not os.path.exists(ENCODER_PATH):
-                logger.error(f"❌ 인코더 파일이 존재하지 않습니다: {ENCODER_PATH}")
+                logger.warning(f"⚠️ 인코더 파일이 없습니다: {ENCODER_PATH}")
                 return None
 
-            # 파일 크기 확인
             encoder_size = os.path.getsize(ENCODER_PATH)
-            logger.info(f"📏 인코더 파일 크기: {encoder_size:,} bytes ({encoder_size / 1024:.2f} KB)")
+            logger.info(f"📦 인코더 로딩 시도: {ENCODER_PATH} ({encoder_size}B)")
 
-            encoder_start = datetime.now()
             with open(ENCODER_PATH, "rb") as f:
                 _encoder = pickle.load(f)
-            encoder_load_time = (datetime.now() - encoder_start).total_seconds()
-
-            logger.info(f"✅ encoder.pkl 로드 성공 (소요시간: {encoder_load_time:.3f}초)")
-
-            # 인코더 구조 확인
-            try:
-                if hasattr(_encoder, 'categories_'):
-                    categories_count = len(_encoder.categories_)
-                    logger.info(f"📊 인코더 카테고리 수: {categories_count}")
-                    for i, cat in enumerate(_encoder.categories_):
-                        logger.info(f"   카테고리 {i}: {len(cat)}개 ({list(cat)})")
-
-                if hasattr(_encoder, 'feature_names_in_'):
-                    logger.info(f"📊 인코더 피처명: {_encoder.feature_names_in_}")
-
-            except Exception as e:
-                logger.warning(f"⚠️ 인코더 구조 정보 읽기 실패: {e}")
+            logger.info("✅ encoder.pkl 로드 성공")
 
         except Exception as e:
             logger.error(f"❌ encoder.pkl 로드 실패: {e}")
-            logger.error(f"🔍 인코더 로드 예외 상세: {type(e).__name__}: {str(e)}")
             return None
 
     return _encoder
@@ -409,39 +288,25 @@ def get_fallback_encoder():
                 ["unisex", "summer", "night", "fresh", "date", "cold"]
             ]
 
-            fallback_start = datetime.now()
             _fallback_encoder.fit(dummy_data)
-            fallback_time = (datetime.now() - fallback_start).total_seconds()
-
-            logger.info(f"✅ Fallback OneHotEncoder 생성 완료 (소요시간: {fallback_time:.3f}초)")
-            logger.info(f"📊 Fallback 인코더 카테고리 수: {len(CATEGORIES)}")
-            logger.info(f"📊 Fallback 인코더 출력 차원: {_fallback_encoder.transform([dummy_data[0]]).shape[1]}")
+            logger.info("✅ Fallback OneHotEncoder 생성 완료")
 
         except Exception as e:
             logger.error(f"❌ Fallback encoder 생성 실패: {e}")
-            logger.error(f"🔍 Fallback 생성 예외 상세: {type(e).__name__}: {str(e)}")
             return None
 
     return _fallback_encoder
 
 
-# ─── 7. AI 감정 클러스터 모델 추천 (향상된 로깅) ─────────────────────────────────────
+# ─── 7. AI 감정 클러스터 모델 추천 ─────────────────────────────────────
 def predict_with_emotion_cluster_model(request_dict: dict) -> pd.DataFrame:
     """감정 클러스터 모델을 사용한 AI 추천"""
 
     try:
-        logger.info(f"🤖 AI 감정 클러스터 모델 추천 시작...")
-
         # 모델 가져오기
-        model_start = datetime.now()
         model = get_model()
-        model_load_time = (datetime.now() - model_start).total_seconds()
-
         if model is None:
-            logger.error(f"❌ 모델 로드 실패 (소요시간: {model_load_time:.3f}초)")
             raise Exception("모델 로드 실패")
-        else:
-            logger.info(f"✅ 모델 로드 성공 (소요시간: {model_load_time:.3f}초)")
 
         # 인코더로 입력 데이터 변환
         raw_features = [
@@ -453,59 +318,45 @@ def predict_with_emotion_cluster_model(request_dict: dict) -> pd.DataFrame:
             request_dict["weather"]
         ]
 
-        logger.info(f"📝 원시 입력 특성: {raw_features}")
+        logger.info(f"🔮 AI 모델 입력 데이터: {raw_features}")
 
         # 인코더 사용
-        encoder_start = datetime.now()
         encoder = get_saved_encoder()
         if encoder:
             try:
                 x_input = encoder.transform([raw_features])
                 encoder_method = "저장된 인코더"
-                encoder_time = (datetime.now() - encoder_start).total_seconds()
-                logger.info(f"✅ 저장된 인코더 사용 성공 (소요시간: {encoder_time:.3f}초)")
             except Exception as e:
-                encoder_time = (datetime.now() - encoder_start).total_seconds()
-                logger.warning(f"⚠️ 저장된 인코더 실패 (소요시간: {encoder_time:.3f}초): {e}")
-                logger.info("🔧 Fallback 인코더로 전환...")
-
-                fallback_start = datetime.now()
+                logger.warning(f"⚠️ encoder.pkl 실패 ({e}), fallback encoder 사용")
                 fallback_encoder = get_fallback_encoder()
                 if fallback_encoder:
                     x_input = fallback_encoder.transform([raw_features])
                     encoder_method = "Fallback 인코더"
-                    fallback_time = (datetime.now() - fallback_start).total_seconds()
-                    logger.info(f"✅ Fallback 인코더 사용 성공 (소요시간: {fallback_time:.3f}초)")
                 else:
                     raise Exception("Fallback encoder 생성 실패")
         else:
-            logger.info("🔧 저장된 인코더가 없어 Fallback 인코더 사용...")
-            fallback_start = datetime.now()
             fallback_encoder = get_fallback_encoder()
             if fallback_encoder:
                 x_input = fallback_encoder.transform([raw_features])
                 encoder_method = "Fallback 인코더"
-                fallback_time = (datetime.now() - fallback_start).total_seconds()
-                logger.info(f"✅ Fallback 인코더 사용 성공 (소요시간: {fallback_time:.3f}초)")
             else:
                 raise Exception("Fallback encoder 생성 실패")
 
         logger.info(f"🔮 감정 클러스터 예측 시작 (입력 shape: {x_input.shape}, 인코더: {encoder_method})")
-        logger.info(f"📊 인코딩된 입력 벡터 크기: {x_input.shape}")
 
         # 모델 예측 (감정 클러스터)
-        predict_start = datetime.now()
         preds = model.predict(x_input, verbose=0)  # (1, 6) 출력
-        predict_time = (datetime.now() - predict_start).total_seconds()
-
         cluster_probabilities = preds[0]  # [0.1, 0.8, 0.05, 0.02, 0.02, 0.01]
         predicted_cluster = int(np.argmax(cluster_probabilities))  # 가장 높은 확률의 클러스터
         confidence = float(cluster_probabilities[predicted_cluster])
 
         cluster_name = EMOTION_CLUSTER_MAP.get(predicted_cluster, f"클러스터 {predicted_cluster}")
-        logger.info(f"✅ 모델 예측 완료 (소요시간: {predict_time:.3f}초)")
         logger.info(f"🎯 예측된 감정 클러스터: {predicted_cluster} ({cluster_name}) - 신뢰도: {confidence:.3f}")
-        logger.info(f"📊 전체 클러스터 확률: {[f'{i}:{p:.3f}' for i, p in enumerate(cluster_probabilities)]}")
+
+        # 모든 클러스터 확률 로그
+        for i, prob in enumerate(cluster_probabilities):
+            cluster_desc = EMOTION_CLUSTER_MAP.get(i, f"클러스터 {i}")
+            logger.info(f"  클러스터 {i} ({cluster_desc}): {prob:.3f}")
 
         # 감정 클러스터에 해당하는 향수 필터링
         if 'emotion_cluster' in df.columns:
@@ -521,14 +372,12 @@ def predict_with_emotion_cluster_model(request_dict: dict) -> pd.DataFrame:
             # 두 번째로 높은 확률의 클러스터 찾기
             second_best = int(np.argsort(cluster_probabilities)[-2])
             cluster_perfumes = df[df['emotion_cluster'] == second_best].copy()
-            original_cluster = predicted_cluster
             predicted_cluster = second_best
             confidence = float(cluster_probabilities[second_best])
-            logger.info(f"📋 대체 클러스터 {second_best} 사용 (원래: {original_cluster}): {len(cluster_perfumes)}개")
+            logger.info(f"📋 대체 클러스터 {second_best} 사용: {len(cluster_perfumes)}개")
 
         # 추가 필터링 (성별, 계절 등)
         original_count = len(cluster_perfumes)
-        logger.info(f"🔍 추가 필터링 시작 (현재 후보: {original_count}개)")
 
         # 성별 필터링
         if 'gender' in cluster_perfumes.columns:
@@ -566,7 +415,6 @@ def predict_with_emotion_cluster_model(request_dict: dict) -> pd.DataFrame:
 
         # 클러스터 신뢰도를 기본 점수로 사용
         base_score = confidence * 0.8  # AI 신뢰도의 80%를 기본 점수로
-        logger.info(f"📊 기본 점수 (AI 신뢰도 기반): {base_score:.3f}")
 
         scores = []
         for idx, (_, row) in enumerate(cluster_perfumes.iterrows()):
@@ -606,13 +454,11 @@ def predict_with_emotion_cluster_model(request_dict: dict) -> pd.DataFrame:
         if not top_10.empty:
             logger.info(f"📊 점수 범위: {top_10['score'].min():.3f} ~ {top_10['score'].max():.3f}")
             logger.info(f"📊 평균 점수: {top_10['score'].mean():.3f}")
-            logger.info(f"📊 선택된 향수들: {list(top_10['name'].head(3))[:3]}...")
 
         return top_10
 
     except Exception as e:
         logger.error(f"❌ AI 클러스터 모델 추천 실패: {e}")
-        logger.error(f"🔍 AI 추천 예외 상세: {type(e).__name__}: {str(e)}")
         raise e
 
 
@@ -787,13 +633,11 @@ def rule_based_recommendation(request_data: dict, top_k: int = 10) -> List[dict]
         if not top_candidates.empty:
             logger.info(f"📊 점수 범위: {top_candidates['score'].min():.3f} ~ {top_candidates['score'].max():.3f}")
             logger.info(f"📊 평균 점수: {top_candidates['score'].mean():.3f}")
-            logger.info(f"📊 선택된 향수들: {list(top_candidates['name'].head(3))[:3]}...")
 
         return top_candidates.to_dict('records')
 
     except Exception as e:
         logger.error(f"❌ 룰 기반 추천 중 오류: {e}")
-        logger.error(f"🔍 룰 기반 예외 상세: {type(e).__name__}: {str(e)}")
         # 최종 안전장치: 완전 랜덤 추천
         logger.info("🎲 완전 랜덤 추천으로 대체")
         random_sample = df.sample(n=min(top_k, len(df)), random_state=42)
@@ -870,9 +714,11 @@ router = APIRouter(prefix="/perfumes", tags=["Perfume"])
 # 시작 시 모델 가용성 확인
 logger.info("🚀 추천 시스템 초기화 시작...")
 check_model_availability()
+if _model_available:
+    logger.info("🤖 AI 감정 클러스터 모델 사용 가능")
+else:
+    logger.info("📋 룰 기반 추천 시스템으로 동작")
 logger.info("✅ 추천 시스템 초기화 완료")
-logger.info(f"🎯 최종 추천 방식: {'🤖 AI 감정 클러스터 모델' if _model_available else '📋 룰 기반 시스템'}")
-logger.info(f"📋 모델 상태: {_model_availability_reason}")
 
 
 # ─── 12. API 엔드포인트들 ────────────────────────────────────────────────
@@ -895,10 +741,10 @@ logger.info(f"📋 모델 상태: {_model_availability_reason}")
             "- `activity`: 활동 (casual/work/date)\n"
             "- `weather`: 날씨 (hot/cold/rainy/any)\n\n"
             "**🧠 AI 모델 세부사항:**\n"
-            "- 모델 구조: Sequential (Dense 256 → 128 → 64 → 6)\n"
+            "- 모델 구조: Sequential (Input 6 → Dense 64 → Dense 6)\n"
             "- 출력: 6개 감정 클러스터 확률 (softmax)\n"
-            "- 학습 데이터: 2025-05-26 저장\n"
-            "- Keras 버전: 2.13.1\n\n"
+            "- Keras 버전: 3.8.0\n"
+            "- 모델 크기: ~31KB\n\n"
             "**✨ 특징:**\n"
             "- 실제 모델 파일 크기 기반 유효성 검증\n"
             "- 견고한 에러 핸들링\n"
@@ -908,7 +754,6 @@ logger.info(f"📋 모델 상태: {_model_availability_reason}")
 def recommend_perfumes(request: RecommendRequest):
     request_start_time = datetime.now()
     logger.info(f"🎯 향수 추천 요청 시작: {request}")
-    logger.info(f"💡 현재 모델 가용성: {'✅ 사용 가능' if _model_available else '❌ 사용 불가'} ({_model_availability_reason})")
 
     # 요청 데이터를 딕셔너리로 변환
     request_dict = request.dict()
@@ -931,7 +776,6 @@ def recommend_perfumes(request: RecommendRequest):
         except Exception as e:
             model_time = (datetime.now() - model_start_time).total_seconds()
             logger.warning(f"⚠️ AI 모델 추천 실패 (소요시간: {model_time:.3f}초): {e}")
-            logger.warning(f"🔍 AI 모델 실패 상세: {type(e).__name__}: {str(e)}")
             logger.info("📋 룰 기반 추천으로 전환")
 
             rule_start_time = datetime.now()
@@ -941,12 +785,12 @@ def recommend_perfumes(request: RecommendRequest):
             method_used = "룰 기반 (AI 모델 실패)"
             logger.info(f"📋 룰 기반 추천 완료 (소요시간: {rule_time:.3f}초)")
     else:
-        logger.info(f"📋 룰 기반 추천 사용 (모델 사용 불가: {_model_availability_reason})")
+        logger.info("📋 룰 기반 추천 사용 (모델 파일 크기 부족)")
         rule_start_time = datetime.now()
         rule_results = rule_based_recommendation(request_dict, 10)
         top_10 = pd.DataFrame(rule_results)
         rule_time = (datetime.now() - rule_start_time).total_seconds()
-        method_used = f"룰 기반 (모델 사용 불가)"
+        method_used = "룰 기반 (모델 크기 부족)"
         logger.info(f"📋 룰 기반 추천 완료 (소요시간: {rule_time:.3f}초)")
 
     # 2) 결과 가공
@@ -992,16 +836,16 @@ def recommend_perfumes(request: RecommendRequest):
 def get_model_status():
     """모델 및 시스템 상태를 반환합니다."""
 
-    # 현재 상태 재확인
-    current_availability = check_model_availability()
-    availability_info = get_model_availability_info()
-
     # 파일 상태 확인
     model_exists = os.path.exists(MODEL_PATH)
     encoder_exists = os.path.exists(ENCODER_PATH)
 
     model_size = os.path.getsize(MODEL_PATH) if model_exists else 0
     encoder_size = os.path.getsize(ENCODER_PATH) if encoder_exists else 0
+
+    # ✅ 수정된 유효성 기준
+    model_size_valid = model_size > 10000  # 10KB 이상 (기존: 100KB)
+    encoder_size_valid = encoder_size > 500  # 500B 이상 (기존: 100B)
 
     # 모델 구조 정보 (모델이 로드된 경우)
     model_structure = None
@@ -1011,46 +855,57 @@ def get_model_status():
                 "input_shape": str(_model.input_shape),
                 "output_shape": str(_model.output_shape),
                 "total_params": _model.count_params(),
-                "layers": len(_model.layers)
+                "layers": len(_model.layers),
+                "layer_details": [
+                    {
+                        "name": layer.name,
+                        "type": layer.__class__.__name__,
+                        "units": getattr(layer, 'units', None),
+                        "activation": getattr(layer.activation, '__name__', None) if hasattr(layer,
+                                                                                             'activation') else None
+                    } for layer in _model.layers
+                ]
             }
         except:
             model_structure = "모델 정보 읽기 실패"
 
-    # TensorFlow 상태 확인
-    tf_status = "Unknown"
-    try:
-        import tensorflow as tf
-        tf_status = f"사용 가능 (v{tf.__version__})"
-    except ImportError:
-        tf_status = "가져오기 실패"
-    except Exception as e:
-        tf_status = f"오류: {e}"
-
     return {
         "timestamp": datetime.now().isoformat(),
         "model_available": _model_available,
-        "availability_reason": _model_availability_reason,
-        "availability_info": availability_info,
-        "current_availability_check": current_availability,
         "files": {
             "keras_model": {
                 "path": MODEL_PATH,
                 "exists": model_exists,
                 "size_bytes": model_size,
+                "size_kb": round(model_size / 1024, 2),  # KB 단위 추가
                 "size_mb": round(model_size / (1024 * 1024), 2),
-                "valid": model_size > 100000,
-                "readable": os.access(MODEL_PATH, os.R_OK) if model_exists else False
+                "valid": model_size_valid,
+                "min_required_kb": 10,  # 최소 요구사항 명시
+                "status": "✅ 유효" if model_size_valid else "❌ 크기 부족"
             },
             "encoder": {
                 "path": ENCODER_PATH,
                 "exists": encoder_exists,
                 "size_bytes": encoder_size,
                 "size_kb": round(encoder_size / 1024, 2),
-                "valid": encoder_size > 100,
-                "readable": os.access(ENCODER_PATH, os.R_OK) if encoder_exists else False
+                "valid": encoder_size_valid,
+                "min_required_bytes": 500,  # 최소 요구사항 명시
+                "status": "✅ 유효" if encoder_size_valid else "❌ 크기 부족"
             }
         },
-        "tensorflow_status": tf_status,
+        "model_info": {
+            "expected_structure": {
+                "input_shape": "(None, 6)",
+                "layers": [
+                    "Dense(64, activation='relu')",
+                    "Dense(6, activation='softmax')"
+                ],
+                "output_shape": "(None, 6)",
+                "purpose": "6개 감정 클러스터 분류"
+            },
+            "keras_version": "3.8.0 (detected from file)",
+            "saved_date": "2025-06-05@05:09:56"
+        },
         "model_structure": model_structure,
         "emotion_clusters": EMOTION_CLUSTER_MAP,
         "recommendation_method": "AI 감정 클러스터 모델" if _model_available else "룰 기반",
@@ -1099,24 +954,24 @@ def health_check():
             "error": str(e)
         }
 
-    # 모델 파일 확인
+    # 모델 파일 확인 (수정된 기준)
     try:
         model_exists = os.path.exists(MODEL_PATH)
         encoder_exists = os.path.exists(ENCODER_PATH)
         model_size = os.path.getsize(MODEL_PATH) if model_exists else 0
         encoder_size = os.path.getsize(ENCODER_PATH) if encoder_exists else 0
 
-        model_valid = model_exists and model_size > 100000
-        encoder_valid = encoder_exists and encoder_size > 100
+        # ✅ 수정된 크기 기준
+        model_valid = model_exists and model_size > 10000  # 10KB 이상
+        encoder_valid = encoder_exists and encoder_size > 500  # 500B 이상
 
         health_status["checks"]["model_files"] = {
             "status": "ok" if model_valid and encoder_valid else "warning",
             "model_available": model_valid,
             "encoder_available": encoder_valid,
-            "model_size_mb": round(model_size / (1024 * 1024), 2),
-            "encoder_size_kb": round(encoder_size / 1024, 2),
-            "fallback_ready": _fallback_encoder is not None,
-            "availability_reason": _model_availability_reason
+            "model_size_kb": round(model_size / 1024, 2),
+            "encoder_size_bytes": encoder_size,
+            "fallback_ready": _fallback_encoder is not None
         }
     except Exception as e:
         health_status["checks"]["model_files"] = {
@@ -1147,7 +1002,7 @@ def health_check():
         else:
             rule_results = rule_based_recommendation(test_request, 3)
             test_results = pd.DataFrame(rule_results)
-            method = "룰 기반 (모델 없음)"
+            method = "룰 기반 (모델 크기 부족)"
 
         processing_time = (datetime.now() - start_time).total_seconds()
 
@@ -1236,7 +1091,7 @@ def test_recommendation_system():
             else:
                 rule_results = rule_based_recommendation(test_case["request"], 5)
                 result_data = rule_results[:3]
-                method = "룰 기반 (모델 없음)"
+                method = "룰 기반 (모델 크기 부족)"
 
             processing_time = (datetime.now() - start_time).total_seconds()
 
@@ -1268,7 +1123,8 @@ def test_recommendation_system():
     return {
         "timestamp": datetime.now().isoformat(),
         "model_available": _model_available,
-        "availability_reason": _model_availability_reason,
+        "model_size_kb": round(os.path.getsize(MODEL_PATH) / 1024, 2) if os.path.exists(MODEL_PATH) else 0,
+        "encoder_size_bytes": os.path.getsize(ENCODER_PATH) if os.path.exists(ENCODER_PATH) else 0,
         "fallback_encoder_available": _fallback_encoder is not None,
         "dataset_size": len(df),
         "emotion_clusters": EMOTION_CLUSTER_MAP,
