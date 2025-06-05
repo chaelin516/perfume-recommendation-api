@@ -39,25 +39,293 @@ except Exception as e:
     raise RuntimeError(f"perfume_final_dataset.csv 로드 중 오류: {e}")
 
 
-# ─── 2. 스키마 정의 ─────────────────────────────────────────────────────────────
-class UserNoteScores(BaseModel):
-    """사용자 노트 선호도 점수 (0-5)"""
-    jasmine: Optional[int] = Field(None, ge=0, le=5, description="자스민 선호도 (0-5)")
-    rose: Optional[int] = Field(None, ge=0, le=5, description="장미 선호도 (0-5)")
-    amber: Optional[int] = Field(None, ge=0, le=5, description="앰버 선호도 (0-5)")
-    musk: Optional[int] = Field(None, ge=0, le=5, description="머스크 선호도 (0-5)")
-    citrus: Optional[int] = Field(None, ge=0, le=5, description="시트러스 선호도 (0-5)")
-    vanilla: Optional[int] = Field(None, ge=0, le=5, description="바닐라 선호도 (0-5)")
-    bergamot: Optional[int] = Field(None, ge=0, le=5, description="베르가못 선호도 (0-5)")
-    cedar: Optional[int] = Field(None, ge=0, le=5, description="시더 선호도 (0-5)")
-    sandalwood: Optional[int] = Field(None, ge=0, le=5, description="샌달우드 선호도 (0-5)")
-    lavender: Optional[int] = Field(None, ge=0, le=5, description="라벤더 선호도 (0-5)")
+# ─── 2. 모델 관련 설정 ─────────────────────────────────────────────────────────────
+BASE_DIR = os.path.dirname(__file__)
+MODEL_PATH = os.path.join(BASE_DIR, "../models/final_model.keras")
+ENCODER_PATH = os.path.join(BASE_DIR, "../models/encoder.pkl")
 
-    def to_dict(self) -> Dict[str, int]:
-        """노트 스코어를 딕셔너리로 변환 (None 값 제외)"""
-        return {k: v for k, v in self.dict().items() if v is not None}
+# 전역 변수
+_model = None
+_encoder = None
+_model_available = False
+_fallback_encoder = None
 
 
+# ─── 3. 모델 가용성 확인 함수 ─────────────────────────────────────────────────────────────
+def check_model_availability():
+    """모델 파일들의 가용성을 확인합니다."""
+    global _model_available
+
+    logger.info("🔍 모델 파일 가용성 확인 중...")
+
+    try:
+        # 파일 존재 및 크기 확인
+        model_exists = os.path.exists(MODEL_PATH)
+        encoder_exists = os.path.exists(ENCODER_PATH)
+
+        model_valid = False
+        encoder_valid = False
+
+        if model_exists:
+            model_size = os.path.getsize(MODEL_PATH)
+            model_valid = model_size > 10000  # 10KB 이상
+            logger.info(f"📄 모델 파일: {model_size:,}B ({model_size / 1024:.1f}KB) {'✅' if model_valid else '❌'}")
+        else:
+            logger.warning(f"⚠️ 모델 파일이 없습니다: {MODEL_PATH}")
+
+        if encoder_exists:
+            encoder_size = os.path.getsize(ENCODER_PATH)
+            encoder_valid = encoder_size > 500  # 500B 이상
+            logger.info(f"📄 인코더 파일: {encoder_size:,}B ({encoder_size}B) {'✅' if encoder_valid else '❌'}")
+        else:
+            logger.warning(f"⚠️ 인코더 파일이 없습니다: {ENCODER_PATH}")
+
+        _model_available = model_valid and encoder_valid
+
+        logger.info(f"🤖 모델 가용성: {'✅ 사용 가능' if _model_available else '❌ 사용 불가'}")
+
+        if _model_available:
+            logger.info(f"✨ 모델 사용 준비 완료 - 크기: {model_size / 1024:.1f}KB")
+        else:
+            if not model_valid:
+                logger.warning(f"⚠️ 모델 파일 크기 부족: {model_size}B (최소 10KB 필요)")
+            if not encoder_valid:
+                logger.warning(f"⚠️ 인코더 파일 크기 부족: {encoder_size}B (최소 500B 필요)")
+
+        return _model_available
+
+    except Exception as e:
+        logger.error(f"❌ 모델 가용성 확인 중 오류: {e}")
+        _model_available = False
+        return False
+
+
+# ─── 4. 모델 로딩 함수들 ─────────────────────────────────────────────────────────────
+def get_model():
+    """Keras 감정 클러스터 모델을 로드합니다."""
+    global _model
+
+    if _model is None:
+        try:
+            if not os.path.exists(MODEL_PATH):
+                logger.warning(f"⚠️ 모델 파일이 없습니다: {MODEL_PATH}")
+                return None
+
+            model_size = os.path.getsize(MODEL_PATH)
+            if model_size < 10000:  # 10KB 미만
+                logger.warning(f"⚠️ 모델 파일이 너무 작습니다: {model_size} bytes ({model_size / 1024:.1f}KB)")
+                return None
+
+            logger.info(f"📦 모델 파일 크기 확인 완료: {model_size:,}B ({model_size / 1024:.1f}KB)")
+
+            # TensorFlow 동적 임포트
+            try:
+                import tensorflow as tf
+                from tensorflow import keras
+                load_model = keras.models.load_model
+                logger.info(f"📦 TensorFlow {tf.__version__} + Keras 로딩")
+            except:
+                from tensorflow.keras.models import load_model
+                logger.info(f"📦 TensorFlow 기존 스타일 로딩")
+
+            logger.info(f"📦 Keras 모델 로딩 시도")
+
+            # compile=False로 빠른 로딩
+            _model = load_model(MODEL_PATH, compile=False)
+
+            logger.info(f"✅ Keras 모델 로드 성공")
+            logger.info(f"📊 모델 입력 shape: {_model.input_shape}")
+            logger.info(f"📊 모델 출력 shape: {_model.output_shape}")
+
+            # 간단한 테스트 추론
+            try:
+                test_input = np.random.random((1, 6)).astype(np.float32)
+                test_output = _model.predict(test_input, verbose=0)
+                logger.info(f"🧪 테스트 추론 성공: 입력{test_input.shape} → 출력{test_output.shape}")
+            except Exception as test_e:
+                logger.warning(f"⚠️ 테스트 추론 실패: {test_e}")
+
+        except Exception as e:
+            logger.error(f"❌ Keras 모델 로드 실패: {e}")
+            return None
+
+    return _model
+
+
+def get_saved_encoder():
+    """저장된 encoder.pkl을 로드합니다."""
+    global _encoder
+
+    if _encoder is None:
+        try:
+            if not os.path.exists(ENCODER_PATH):
+                logger.warning(f"⚠️ 인코더 파일이 없습니다: {ENCODER_PATH}")
+                return None
+
+            encoder_size = os.path.getsize(ENCODER_PATH)
+            logger.info(f"📦 인코더 로딩 시도: {ENCODER_PATH} ({encoder_size}B)")
+
+            with open(ENCODER_PATH, "rb") as f:
+                _encoder = pickle.load(f)
+            logger.info("✅ encoder.pkl 로드 성공")
+
+        except Exception as e:
+            logger.error(f"❌ encoder.pkl 로드 실패: {e}")
+            return None
+
+    return _encoder
+
+
+def get_fallback_encoder():
+    """encoder.pkl과 호환되는 Fallback OrdinalEncoder를 생성합니다."""
+    global _fallback_encoder
+
+    if _fallback_encoder is None:
+        try:
+            logger.info("🔧 Fallback OrdinalEncoder 생성 중...")
+
+            from sklearn.preprocessing import OrdinalEncoder
+
+            CATEGORIES = [
+                ["men", "unisex", "women"],  # gender
+                ["fall", "spring", "summer", "winter"],  # season_tags
+                ["day", "night"],  # time_tags
+                ["confident, fresh", "confident, mysterious", "elegant, friendly", "pure, friendly"],
+                # desired_impression
+                ["casual", "date", "work"],  # activity
+                ["any", "cold", "hot", "rainy"]  # weather
+            ]
+
+            _fallback_encoder = OrdinalEncoder(
+                categories=CATEGORIES,
+                handle_unknown="error"
+            )
+
+            # 더미 데이터로 fit
+            dummy_data = [
+                ["men", "fall", "day", "confident, fresh", "casual", "any"],
+                ["unisex", "spring", "night", "confident, mysterious", "date", "cold"],
+                ["women", "summer", "day", "elegant, friendly", "work", "hot"],
+                ["men", "winter", "night", "pure, friendly", "casual", "rainy"]
+            ]
+
+            _fallback_encoder.fit(dummy_data)
+            logger.info("✅ Fallback OrdinalEncoder 생성 및 훈련 완료")
+
+            # 인코더 검증 테스트
+            test_input = ["women", "spring", "day", "confident, fresh", "casual", "hot"]
+            test_encoded = _fallback_encoder.transform([test_input])
+            logger.info(f"🧪 Fallback 인코더 테스트 성공: 입력 6개 → 출력 {test_encoded.shape[1]}개")
+
+        except Exception as e:
+            logger.error(f"❌ Fallback encoder 생성 실패: {e}")
+            return None
+
+    return _fallback_encoder
+
+
+def safe_transform_input(raw_features: list) -> np.ndarray:
+    """안전한 입력 변환 함수"""
+    try:
+        # 1. 저장된 인코더 시도
+        encoder = get_saved_encoder()
+        if encoder:
+            try:
+                logger.info(f"🔍 저장된 인코더로 변환 시도: {raw_features}")
+                transformed = encoder.transform([raw_features])
+                logger.info(f"✅ 저장된 인코더 변환 성공: {transformed.shape}")
+                return transformed
+            except Exception as e:
+                logger.warning(f"⚠️ 저장된 인코더 실패: {e}")
+
+        # 2. Fallback 인코더 시도
+        fallback_encoder = get_fallback_encoder()
+        if fallback_encoder:
+            logger.info(f"🔄 Fallback 인코더로 변환: {raw_features}")
+            transformed = fallback_encoder.transform([raw_features])
+            logger.info(f"✅ Fallback 인코더 변환 성공: {transformed.shape}")
+            return transformed
+        else:
+            raise Exception("Fallback 인코더 생성 실패")
+
+    except Exception as e:
+        logger.error(f"❌ 입력 변환 완전 실패: {e}")
+        raise e
+
+
+# ─── 5. AI 모델 호출 함수 ─────────────────────────────────────────────────────────────
+def call_ai_model_for_first_recommendation(user_preferences: dict) -> Dict:
+    """AI 모델을 호출하여 1차 추천 결과를 얻습니다."""
+    try:
+        # 모델 가져오기
+        model = get_model()
+        if model is None:
+            raise Exception("모델 로드 실패")
+
+        # API 입력을 모델 호환 형식으로 변환
+        raw_features = [
+            user_preferences["gender"],
+            user_preferences["season_tags"],
+            user_preferences["time_tags"],
+            user_preferences["desired_impression"],
+            user_preferences["activity"],
+            user_preferences["weather"]
+        ]
+
+        logger.info(f"🔮 AI 모델 입력 데이터: {raw_features}")
+
+        # 안전한 입력 변환 사용
+        x_input = safe_transform_input(raw_features)
+        logger.info(f"🔮 감정 클러스터 예측 시작 (입력 shape: {x_input.shape})")
+
+        # 모델 예측
+        preds = model.predict(x_input, verbose=0)
+        cluster_probabilities = preds[0]
+        predicted_cluster = int(np.argmax(cluster_probabilities))
+        confidence = float(cluster_probabilities[predicted_cluster])
+
+        logger.info(f"🎯 예측된 감정 클러스터: {predicted_cluster} - 신뢰도: {confidence:.3f}")
+
+        # 감정 클러스터에 해당하는 향수 필터링
+        if 'emotion_cluster' in df.columns:
+            cluster_perfumes = df[df['emotion_cluster'] == predicted_cluster].copy()
+            logger.info(f"📋 클러스터 {predicted_cluster} 향수 개수: {len(cluster_perfumes)}개")
+        else:
+            cluster_perfumes = df.copy()
+
+        # 추가 필터링 (성별, 계절 등)
+        if 'gender' in cluster_perfumes.columns:
+            gender_filtered = cluster_perfumes[
+                cluster_perfumes['gender'] == user_preferences["gender"]
+                ]
+            if not gender_filtered.empty:
+                cluster_perfumes = gender_filtered
+
+        if 'season_tags' in cluster_perfumes.columns:
+            season_filtered = cluster_perfumes[
+                cluster_perfumes['season_tags'].str.contains(
+                    user_preferences["season_tags"], na=False, case=False
+                )
+            ]
+            if not season_filtered.empty:
+                cluster_perfumes = season_filtered
+
+        # 상위 10개 인덱스 추출
+        selected_indices = cluster_perfumes.head(10).index.tolist()
+
+        return {
+            "cluster": predicted_cluster,
+            "confidence": confidence,
+            "emotion_proba": [round(float(prob), 4) for prob in cluster_probabilities],
+            "selected_idx": selected_indices
+        }
+
+    except Exception as e:
+        logger.error(f"❌ AI 모델 1차 추천 실패: {e}")
+        raise e
+
+
+# ─── 6. 스키마 정의 ─────────────────────────────────────────────────────────────
 class UserPreferences(BaseModel):
     """1차 추천을 위한 사용자 선호도 (AI 모델 입력)"""
 
@@ -113,6 +381,38 @@ class SecondRecommendRequest(BaseModel):
             if not isinstance(score, int) or score < 0 or score > 5:
                 raise ValueError(f"노트 '{note}'의 점수는 0-5 사이의 정수여야 합니다.")
 
+    @validator('emotion_proba')
+    def validate_emotion_proba(cls, v):
+        if v is None:
+            return v
+
+        if len(v) != 6:
+            raise ValueError("emotion_proba는 정확히 6개의 확률값을 가져야 합니다.")
+
+        total = sum(v)
+        if not (0.95 <= total <= 1.05):
+            raise ValueError(f"emotion_proba의 합은 1.0에 가까워야 합니다. 현재: {total}")
+
+        for prob in v:
+            if not (0.0 <= prob <= 1.0):
+                raise ValueError("각 확률값은 0.0-1.0 사이여야 합니다.")
+
+        return v
+
+    @validator('selected_idx')
+    def validate_selected_idx(cls, v):
+        if v is None:
+            return v
+
+        if len(set(v)) != len(v):
+            raise ValueError("selected_idx에 중복된 인덱스가 있습니다.")
+
+        for idx in v:
+            if idx < 0:
+                raise ValueError("인덱스는 0 이상이어야 합니다.")
+
+        return v
+
     class Config:
         schema_extra = {
             "example": {
@@ -135,38 +435,6 @@ class SecondRecommendRequest(BaseModel):
             }
         }
 
-    @validator('emotion_proba')
-    def validate_emotion_proba(cls, v):
-        if v is None:
-            return v  # Optional이므로 None 허용
-
-        if len(v) != 6:
-            raise ValueError("emotion_proba는 정확히 6개의 확률값을 가져야 합니다.")
-
-        total = sum(v)
-        if not (0.95 <= total <= 1.05):  # 소수점 오차 허용
-            raise ValueError(f"emotion_proba의 합은 1.0에 가까워야 합니다. 현재: {total}")
-
-        for prob in v:
-            if not (0.0 <= prob <= 1.0):
-                raise ValueError("각 확률값은 0.0-1.0 사이여야 합니다.")
-
-        return v
-
-    @validator('selected_idx')
-    def validate_selected_idx(cls, v):
-        if v is None:
-            return v  # Optional이므로 None 허용
-
-        if len(set(v)) != len(v):
-            raise ValueError("selected_idx에 중복된 인덱스가 있습니다.")
-
-        for idx in v:
-            if idx < 0:
-                raise ValueError("인덱스는 0 이상이어야 합니다.")
-
-        return v
-
 
 class SecondRecommendItem(BaseModel):
     """2차 추천 결과 아이템"""
@@ -177,21 +445,7 @@ class SecondRecommendItem(BaseModel):
     emotion_cluster: int = Field(..., description="감정 클러스터 ID (0-5)", ge=0, le=5)
 
 
-class SecondRecommendResponse(BaseModel):
-    """2차 추천 응답"""
-
-    recommendations: List[SecondRecommendItem] = Field(
-        ...,
-        description="2차 추천 향수 목록 (점수 내림차순)"
-    )
-
-    metadata: Dict = Field(
-        ...,
-        description="추천 메타데이터"
-    )
-
-
-# ─── 3. 감정 클러스터 매핑 ─────────────────────────────────────────────────────────
+# ─── 7. 감정 클러스터 매핑 ─────────────────────────────────────────────────────────
 EMOTION_CLUSTER_MAP = {
     0: "차분한, 편안한",
     1: "자신감, 신선함",
@@ -202,11 +456,9 @@ EMOTION_CLUSTER_MAP = {
 }
 
 
-# ─── 4. 노트 분석 유틸리티 함수들 ─────────────────────────────────────────────────
+# ─── 8. 노트 분석 유틸리티 함수들 ─────────────────────────────────────────────────
 def parse_notes_from_string(notes_str: str) -> List[str]:
-    """
-    노트 문자열을 파싱하여 개별 노트 리스트로 변환
-    """
+    """노트 문자열을 파싱하여 개별 노트 리스트로 변환"""
     if not notes_str or pd.isna(notes_str):
         return []
 
@@ -220,9 +472,7 @@ def parse_notes_from_string(notes_str: str) -> List[str]:
 
 
 def normalize_note_name(note: str) -> str:
-    """
-    노트명을 정규화 (유사한 노트들을 매칭하기 위해)
-    """
+    """노트명을 정규화 (유사한 노트들을 매칭하기 위해)"""
     note = note.lower().strip()
 
     # 일반적인 노트명 정규화 규칙
@@ -269,9 +519,7 @@ def normalize_note_name(note: str) -> str:
 
 
 def calculate_note_match_score(perfume_notes: List[str], user_note_scores: Dict[str, int]) -> float:
-    """
-    향수의 노트와 사용자 선호도를 비교하여 매칭 점수 계산
-    """
+    """향수의 노트와 사용자 선호도를 비교하여 매칭 점수 계산"""
     if not perfume_notes or not user_note_scores:
         return 0.0
 
@@ -285,9 +533,6 @@ def calculate_note_match_score(perfume_notes: List[str], user_note_scores: Dict[
     if total_preference_weight == 0:
         return 0.0
 
-    logger.debug(f"🔍 향수 노트: {normalized_perfume_notes}")
-    logger.debug(f"🔍 사용자 선호도: {user_note_scores}")
-
     for user_note, preference_score in user_note_scores.items():
         normalized_user_note = normalize_note_name(user_note)
 
@@ -296,16 +541,14 @@ def calculate_note_match_score(perfume_notes: List[str], user_note_scores: Dict[
             # 선호도 점수를 0-1 범위로 정규화 (5점 만점)
             normalized_preference = preference_score / 5.0
 
-            # 가중치 적용 (해당 노트의 선호도가 전체에서 차지하는 비중)
+            # 가중치 적용
             weight = preference_score / total_preference_weight
 
             contribution = normalized_preference * weight
             total_score += contribution
             matched_notes_count += 1
 
-            logger.debug(f"  ✅ 매칭: {normalized_user_note} (선호도: {preference_score}/5, 기여도: {contribution:.3f})")
-
-        # 부분 매칭 (노트명이 포함되는 경우)
+        # 부분 매칭
         else:
             partial_matches = []
             for perfume_note in normalized_perfume_notes:
@@ -320,27 +563,21 @@ def calculate_note_match_score(perfume_notes: List[str], user_note_scores: Dict[
                 total_score += contribution
                 matched_notes_count += 0.5
 
-                logger.debug(f"  🔸 부분 매칭: {normalized_user_note} → {partial_matches} (기여도: {contribution:.3f})")
-
     # 매칭된 노트가 없으면 0점
     if matched_notes_count == 0:
         return 0.0
 
-    # 매칭 비율에 따른 보너스 (많은 노트가 매칭될수록 추가 점수)
+    # 매칭 비율에 따른 보너스
     match_ratio = matched_notes_count / len(user_note_scores)
     match_bonus = match_ratio * 0.1  # 최대 10% 보너스
 
     final_score = min(1.0, total_score + match_bonus)
 
-    logger.debug(f"  📊 매칭 결과: {matched_notes_count}/{len(user_note_scores)}개 노트, 최종 점수: {final_score:.3f}")
-
     return final_score
 
 
 def calculate_emotion_cluster_weight(perfume_cluster: int, emotion_proba: List[float]) -> float:
-    """
-    향수의 감정 클러스터와 사용자의 감정 확률 분포를 기반으로 가중치 계산
-    """
+    """향수의 감정 클러스터와 사용자의 감정 확률 분포를 기반으로 가중치 계산"""
     if perfume_cluster < 0 or perfume_cluster >= len(emotion_proba):
         logger.warning(f"⚠️ 잘못된 클러스터 ID: {perfume_cluster}")
         return 0.1  # 최소 가중치
@@ -348,10 +585,8 @@ def calculate_emotion_cluster_weight(perfume_cluster: int, emotion_proba: List[f
     # 해당 클러스터의 확률을 가중치로 사용
     cluster_weight = emotion_proba[perfume_cluster]
 
-    # 너무 낮은 가중치는 최소값으로 보정 (완전히 배제하지 않음)
+    # 너무 낮은 가중치는 최소값으로 보정
     cluster_weight = max(0.05, cluster_weight)
-
-    logger.debug(f"📊 클러스터 {perfume_cluster} 가중치: {cluster_weight:.3f}")
 
     return cluster_weight
 
@@ -361,9 +596,7 @@ def calculate_final_score(
         emotion_cluster_weight: float,
         diversity_bonus: float = 0.0
 ) -> float:
-    """
-    최종 추천 점수 계산
-    """
+    """최종 추천 점수 계산"""
     # 노트 매칭 점수 70%, 감정 클러스터 가중치 25%, 다양성 보너스 5%
     final_score = (
             note_match_score * 0.70 +
@@ -377,23 +610,21 @@ def calculate_final_score(
     return final_score
 
 
-# ─── 8. 메인 추천 함수 ─────────────────────────────────────────────────────────
+# ─── 9. 메인 추천 함수 ─────────────────────────────────────────────────────────
 def process_second_recommendation_with_ai(
         user_preferences: dict,
         user_note_scores: Dict[str, int],
         emotion_proba: Optional[List[float]] = None,
         selected_idx: Optional[List[int]] = None
 ) -> List[Dict]:
-    """
-    AI 모델을 포함한 완전한 2차 추천 처리 함수
-    """
+    """AI 모델을 포함한 완전한 2차 추천 처리 함수"""
     start_time = datetime.now()
 
     logger.info(f"🎯 AI 모델 포함 2차 추천 처리 시작")
     logger.info(f"  📝 사용자 선호도: {user_preferences}")
     logger.info(f"  🎨 노트 선호도: {user_note_scores}")
 
-    # 1. emotion_proba 또는 selected_idx가 없으면 AI 모델 호출
+    # emotion_proba 또는 selected_idx가 없으면 AI 모델 호출
     if emotion_proba is None or selected_idx is None:
         logger.info("🤖 AI 모델로 1차 추천 수행 (emotion_proba 또는 selected_idx 없음)")
 
@@ -425,7 +656,7 @@ def process_second_recommendation_with_ai(
             selected_idx = candidates.head(10).index.tolist()
             logger.info(f"📋 룰 기반 폴백으로 {len(selected_idx)}개 인덱스 생성")
 
-    # 2. 기존 2차 추천 로직 수행
+    # 기존 2차 추천 로직 수행
     return process_second_recommendation(user_note_scores, emotion_proba, selected_idx)
 
 
@@ -434,9 +665,7 @@ def process_second_recommendation(
         emotion_proba: List[float],
         selected_idx: List[int]
 ) -> List[Dict]:
-    """
-    2차 추천 처리 메인 함수
-    """
+    """2차 추천 처리 메인 함수"""
     start_time = datetime.now()
 
     logger.info(f"🎯 2차 추천 처리 시작")
@@ -478,7 +707,7 @@ def process_second_recommendation(
             # 2. 감정 클러스터 가중치 계산
             emotion_weight = calculate_emotion_cluster_weight(perfume_cluster, emotion_proba)
 
-            # 3. 다양성 보너스 계산 (같은 브랜드가 많으면 감점)
+            # 3. 다양성 보너스 계산
             brand_count[perfume_brand] = brand_count.get(perfume_brand, 0) + 1
             diversity_bonus = max(0.0, 0.1 - (brand_count[perfume_brand] - 1) * 0.02)
 
@@ -500,10 +729,6 @@ def process_second_recommendation(
 
             results.append(result_item)
 
-            logger.debug(f"📊 {perfume_name}: 노트매칭={note_match_score:.3f}, "
-                         f"감정가중치={emotion_weight:.3f}, 다양성={diversity_bonus:.3f}, "
-                         f"최종점수={final_score:.3f}")
-
         except Exception as e:
             logger.error(f"❌ 향수 '{row.get('name', 'Unknown')}' 처리 중 오류: {e}")
             continue
@@ -518,12 +743,11 @@ def process_second_recommendation(
     if results:
         top_scores = [r['final_score'] for r in results[:5]]
         logger.info(f"📊 상위 5개 점수: {top_scores}")
-        logger.info(f"📊 점수 범위: {results[-1]['final_score']:.3f} ~ {results[0]['final_score']:.3f}")
 
     return results
 
 
-# ─── 11. 라우터 설정 및 모델 초기화 ─────────────────────────────────────────────────────────────
+# ─── 10. 라우터 설정 및 모델 초기화 ─────────────────────────────────────────────────────────────
 router = APIRouter(prefix="/perfumes", tags=["Second Recommendation"])
 
 # 시작 시 모델 가용성 확인
@@ -536,6 +760,7 @@ else:
 logger.info("✅ 2차 추천 시스템 초기화 완료")
 
 
+# ─── 11. API 엔드포인트 ─────────────────────────────────────────────────────────────
 @router.post(
     "/recommend-2nd",
     response_model=List[SecondRecommendItem],
@@ -546,22 +771,17 @@ logger.info("✅ 2차 추천 시스템 초기화 완료")
             "노트 선호도와 결합하여 정밀한 2차 추천을 제공합니다.\n\n"
             "**📥 입력 정보:**\n"
             "- `user_preferences`: 사용자 기본 선호도 (AI 모델 입력용)\n"
-            "  - gender, season_tags, time_tags, desired_impression, activity, weather\n"
             "- `user_note_scores`: 사용자의 노트별 선호도 점수 (0-5)\n"
-            "- `emotion_proba` (선택): 감정 확률 배열 (제공되지 않으면 AI 모델로 계산)\n"
-            "- `selected_idx` (선택): 선택된 향수 인덱스 (제공되지 않으면 AI 모델로 계산)\n\n"
+            "- `emotion_proba` (선택): 감정 확률 배열\n"
+            "- `selected_idx` (선택): 선택된 향수 인덱스\n\n"
             "**🤖 처리 과정:**\n"
-            "1. **AI 모델 호출**: user_preferences → 감정 클러스터 예측 + 향수 선택\n"
+            "1. **AI 모델 호출**: user_preferences → 감정 클러스터 예측\n"
             "2. **노트 매칭**: user_note_scores와 향수 노트 비교\n"
             "3. **점수 계산**: 노트 매칭(70%) + 감정 가중치(25%) + 다양성(5%)\n"
             "4. **최종 정렬**: 점수 기준 내림차순 정렬\n\n"
-            "**📤 출력 정보:**\n"
-            "- 향수별 최종 추천 점수와 감정 클러스터 정보\n"
-            "- 점수 기준 내림차순 정렬\n\n"
             "**✨ 특징:**\n"
             "- 🤖 AI 모델 자동 호출로 완전한 추천 파이프라인\n"
             "- 🎯 정확한 노트 매칭 + 부분 매칭 지원\n"
-            "- 📊 감정 클러스터 기반 가중치 적용\n"
             "- 🔄 AI 모델 실패 시 룰 기반 폴백\n"
             "- 🌟 브랜드 다양성 보장"
     )
@@ -621,12 +841,6 @@ def recommend_second_perfumes(request: SecondRecommendRequest):
         logger.info(f"📊 최고 점수: {response_items[0].final_score:.3f} ({response_items[0].name})")
         logger.info(f"📊 최저 점수: {response_items[-1].final_score:.3f} ({response_items[-1].name})")
 
-        # 클러스터별 분포 로깅
-        cluster_distribution = {}
-        for item in response_items:
-            cluster_distribution[item.emotion_cluster] = cluster_distribution.get(item.emotion_cluster, 0) + 1
-        logger.info(f"📊 클러스터별 분포: {cluster_distribution}")
-
         # AI 모델 호출 여부 로깅
         if not has_emotion_proba or not has_selected_idx:
             logger.info("🤖 AI 모델이 성공적으로 호출되어 1차 추천 수행됨")
@@ -642,97 +856,6 @@ def recommend_second_perfumes(request: SecondRecommendRequest):
         raise HTTPException(
             status_code=500,
             detail=f"AI 모델 포함 2차 추천 처리 중 오류가 발생했습니다: {str(e)}"
-        )
-
-
-# ─── 7. 추가 유틸리티 API들 ─────────────────────────────────────────────────────
-@router.get(
-    "/note-analysis/{perfume_index}",
-    summary="향수 노트 분석",
-    description="특정 향수의 노트 정보를 분석하여 반환합니다."
-)
-def analyze_perfume_notes(perfume_index: int):
-    """향수 노트 분석 API"""
-
-    try:
-        if perfume_index < 0 or perfume_index >= len(df):
-            raise HTTPException(
-                status_code=404,
-                detail=f"잘못된 향수 인덱스: {perfume_index} (범위: 0-{len(df) - 1})"
-            )
-
-        perfume = df.iloc[perfume_index]
-        notes_str = str(perfume.get('notes', ''))
-        parsed_notes = parse_notes_from_string(notes_str)
-        normalized_notes = [normalize_note_name(note) for note in parsed_notes]
-
-        return {
-            "perfume_index": perfume_index,
-            "name": str(perfume['name']),
-            "brand": str(perfume['brand']),
-            "raw_notes": notes_str,
-            "parsed_notes": parsed_notes,
-            "normalized_notes": normalized_notes,
-            "note_count": len(parsed_notes),
-            "emotion_cluster": int(perfume.get('emotion_cluster', 0))
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ 노트 분석 중 오류: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"노트 분석 중 오류가 발생했습니다: {str(e)}"
-        )
-
-
-@router.post(
-    "/test-note-matching",
-    summary="노트 매칭 테스트",
-    description="사용자 선호도와 향수 노트 간의 매칭 점수를 테스트합니다."
-)
-def test_note_matching(
-        user_notes: Dict[str, int],
-        perfume_notes: List[str]
-):
-    """노트 매칭 테스트 API"""
-
-    try:
-        # 노트 매칭 점수 계산
-        match_score = calculate_note_match_score(perfume_notes, user_notes)
-
-        # 정규화된 노트들
-        normalized_perfume_notes = [normalize_note_name(note) for note in perfume_notes]
-        normalized_user_notes = {normalize_note_name(k): v for k, v in user_notes.items()}
-
-        # 매칭 상세 정보
-        matches = []
-        for user_note, preference in user_notes.items():
-            normalized_user_note = normalize_note_name(user_note)
-            if normalized_user_note in normalized_perfume_notes:
-                matches.append({
-                    "user_note": user_note,
-                    "normalized": normalized_user_note,
-                    "preference": preference,
-                    "match_type": "exact"
-                })
-
-        return {
-            "user_notes": user_notes,
-            "perfume_notes": perfume_notes,
-            "normalized_perfume_notes": normalized_perfume_notes,
-            "match_score": round(match_score, 3),
-            "matches": matches,
-            "match_count": len(matches),
-            "total_user_notes": len(user_notes)
-        }
-
-    except Exception as e:
-        logger.error(f"❌ 노트 매칭 테스트 중 오류: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"노트 매칭 테스트 중 오류가 발생했습니다: {str(e)}"
         )
 
 
@@ -766,6 +889,7 @@ def get_system_status():
 
         return {
             "system_status": "operational",
+            "model_available": _model_available,
             "dataset_info": {
                 "total_perfumes": total_perfumes,
                 "unique_brands": unique_brands,
