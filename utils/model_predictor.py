@@ -5,7 +5,7 @@ import pickle
 import tensorflow as tf
 import os
 
-MODEL_PATH = "./models/final_model_perfume.keras"
+MODEL_PATH = "./models/final_model.keras"
 ENCODER_PATH = "./models/encoder.pkl"
 
 # 전역 변수로 모델과 인코더를 저장 (lazy loading)
