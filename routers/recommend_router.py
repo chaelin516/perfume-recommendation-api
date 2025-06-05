@@ -10,13 +10,16 @@ from pydantic import BaseModel
 from typing import List, Literal, Optional, Dict, Any
 import pandas as pd
 from sklearn.preprocessing import OneHotEncoder
+from collections import Counter
 
 # ✅ schemas/recommend.py에서 스키마 임포트
 from schemas.recommend import (
     RecommendRequest,
     RecommendedPerfume,
     RecommendResponse,
+    ClusterRecommendResponse,  # 🆕 새로운 스키마
     SUPPORTED_CATEGORIES,
+    EMOTION_CLUSTER_DESCRIPTIONS,
     validate_request_categories,
     map_single_to_combined_impression
 )
@@ -121,7 +124,89 @@ API_TO_MODEL_MAPPING = {
 }
 
 
-# ─── 5. 모델 가용성 확인 (31KB 모델에 맞게 수정) ─────────────────────────────────────
+# ─── 5. 🆕 노트 분석 유틸리티 함수들 ─────────────────────────────────────
+def parse_notes_from_string(notes_str: str) -> List[str]:
+    """
+    노트 문자열을 파싱하여 개별 노트 리스트로 변환
+
+    Args:
+        notes_str: "bergamot, jasmine, white musk, amber" 형태의 문자열
+
+    Returns:
+        개별 노트들의 리스트
+    """
+    if not notes_str or pd.isna(notes_str):
+        return []
+
+    # 콤마로 분리하고 앞뒤 공백 제거
+    notes = [note.strip().lower() for note in str(notes_str).split(',')]
+
+    # 빈 문자열 제거
+    notes = [note for note in notes if note and note != '']
+
+    return notes
+
+
+def get_top_notes_from_cluster(cluster_perfumes: pd.DataFrame, top_k: int = 15) -> List[str]:
+    """
+    클러스터에 속한 향수들의 노트를 분석하여 상위 K개 노트 반환
+
+    Args:
+        cluster_perfumes: 클러스터에 속한 향수들의 DataFrame
+        top_k: 반환할 상위 노트 개수
+
+    Returns:
+        빈도순으로 정렬된 상위 K개 노트 리스트
+    """
+    all_notes = []
+
+    for _, row in cluster_perfumes.iterrows():
+        notes = parse_notes_from_string(row.get('notes', ''))
+        all_notes.extend(notes)
+
+    if not all_notes:
+        # 노트가 없으면 일반적인 향수 노트 반환
+        return [
+                   "bergamot", "jasmine", "rose", "vanilla", "sandalwood",
+                   "cedar", "musk", "amber", "lavender", "citrus",
+                   "woody", "floral", "fresh", "sweet", "spicy"
+               ][:top_k]
+
+    # 빈도 계산 및 상위 K개 선택
+    note_counter = Counter(all_notes)
+    top_notes = [note for note, count in note_counter.most_common(top_k)]
+
+    logger.info(f"📊 클러스터 노트 분석: 총 {len(all_notes)}개 노트 → 상위 {len(top_notes)}개 선택")
+    logger.info(f"📊 상위 5개 노트: {top_notes[:5]}")
+
+    return top_notes
+
+
+def get_perfume_indices(cluster_perfumes: pd.DataFrame, top_k: int = 10) -> List[int]:
+    """
+    추천 향수들의 원본 DataFrame 인덱스 반환
+
+    Args:
+        cluster_perfumes: 클러스터에 속한 향수들의 DataFrame
+        top_k: 반환할 인덱스 개수
+
+    Returns:
+        원본 데이터셋에서의 인덱스 리스트
+    """
+    # 점수가 있으면 점수 기준으로 정렬, 없으면 원본 순서 유지
+    if 'score' in cluster_perfumes.columns:
+        sorted_perfumes = cluster_perfumes.nlargest(top_k, 'score')
+    else:
+        sorted_perfumes = cluster_perfumes.head(top_k)
+
+    indices = sorted_perfumes.index.tolist()
+
+    logger.info(f"📋 선택된 향수 인덱스: {indices}")
+
+    return indices
+
+
+# ─── 6. 모델 가용성 확인 (31KB 모델에 맞게 수정) ─────────────────────────────────────
 def check_model_availability():
     """모델 파일들의 가용성을 확인합니다."""
     global _model_available
@@ -172,7 +257,7 @@ def check_model_availability():
         return False
 
 
-# ─── 6. 모델 로딩 함수들 (Keras 3.8.0 호환 및 크기 체크 수정) ─────────────────────────────────────
+# ─── 7. 모델 로딩 함수들 (Keras 3.8.0 호환 및 크기 체크 수정) ─────────────────────────────────────
 def get_model():
     """Keras 감정 클러스터 모델을 로드합니다."""
     global _model
@@ -380,9 +465,154 @@ def safe_transform_input(raw_features: list) -> np.ndarray:
         raise e
 
 
-# ─── 7. AI 감정 클러스터 모델 추천 ─────────────────────────────────────
+# ─── 8. 🆕 클러스터 기반 추천 함수 ─────────────────────────────────────
+def predict_cluster_recommendation(request_dict: dict) -> Dict[str, Any]:
+    """
+    ✅ 클러스터 기반 추천 - 새로운 응답 형태
+
+    Returns:
+        {
+            "cluster": int,
+            "description": str,
+            "proba": List[float],
+            "recommended_notes": List[str],
+            "selected_idx": List[int]
+        }
+    """
+    try:
+        start_time = datetime.now()
+
+        # 모델 가져오기
+        model = get_model()
+        if model is None:
+            raise Exception("모델 로드 실패")
+
+        # ✅ API 입력을 모델 호환 형식으로 변환
+        raw_features = [
+            request_dict["gender"],
+            request_dict["season_tags"],
+            request_dict["time_tags"],
+            request_dict["desired_impression"],
+            request_dict["activity"],
+            request_dict["weather"]
+        ]
+
+        logger.info(f"🔮 클러스터 추천 입력 데이터: {raw_features}")
+
+        # ✅ 안전한 입력 변환 사용
+        x_input = safe_transform_input(raw_features)
+        logger.info(f"🔮 감정 클러스터 예측 시작 (입력 shape: {x_input.shape})")
+
+        # 모델 예측 (감정 클러스터)
+        preds = model.predict(x_input, verbose=0)  # (1, 6) 출력
+        cluster_probabilities = preds[0]  # [0.1, 0.8, 0.05, 0.02, 0.02, 0.01]
+        predicted_cluster = int(np.argmax(cluster_probabilities))  # 가장 높은 확률의 클러스터
+        confidence = float(cluster_probabilities[predicted_cluster])
+
+        # 클러스터 설명
+        cluster_description = EMOTION_CLUSTER_MAP.get(predicted_cluster, f"클러스터 {predicted_cluster}")
+
+        logger.info(f"🎯 예측된 감정 클러스터: {predicted_cluster} ({cluster_description}) - 신뢰도: {confidence:.3f}")
+
+        # 모든 클러스터 확률 로그
+        for i, prob in enumerate(cluster_probabilities):
+            cluster_desc = EMOTION_CLUSTER_MAP.get(i, f"클러스터 {i}")
+            logger.info(f"  클러스터 {i} ({cluster_desc}): {prob:.3f}")
+
+        # 감정 클러스터에 해당하는 향수 필터링
+        if 'emotion_cluster' in df.columns:
+            cluster_perfumes = df[df['emotion_cluster'] == predicted_cluster].copy()
+            logger.info(f"📋 클러스터 {predicted_cluster} 향수 개수: {len(cluster_perfumes)}개")
+        else:
+            logger.warning("⚠️ emotion_cluster 컬럼이 없어 전체 데이터 사용")
+            cluster_perfumes = df.copy()
+
+        # 클러스터에 해당하는 향수가 없으면 대체 클러스터 사용
+        if cluster_perfumes.empty:
+            logger.warning(f"⚠️ 클러스터 {predicted_cluster}에 해당하는 향수가 없음")
+            # 두 번째로 높은 확률의 클러스터 찾기
+            second_best = int(np.argsort(cluster_probabilities)[-2])
+            cluster_perfumes = df[df['emotion_cluster'] == second_best].copy()
+            predicted_cluster = second_best
+            confidence = float(cluster_probabilities[second_best])
+            cluster_description = EMOTION_CLUSTER_MAP.get(predicted_cluster, f"클러스터 {predicted_cluster}")
+            logger.info(f"📋 대체 클러스터 {second_best} 사용: {len(cluster_perfumes)}개")
+
+        # ✅ 추가 필터링 (성별, 계절 등)
+        original_count = len(cluster_perfumes)
+
+        # 성별 필터링
+        if 'gender' in cluster_perfumes.columns:
+            gender_filtered = cluster_perfumes[
+                cluster_perfumes['gender'] == request_dict["gender"]
+                ]
+            if not gender_filtered.empty:
+                cluster_perfumes = gender_filtered
+                logger.info(f"  성별 '{request_dict['gender']}' 필터링: {original_count} → {len(cluster_perfumes)}개")
+
+        # 계절 필터링
+        if 'season_tags' in cluster_perfumes.columns:
+            season_filtered = cluster_perfumes[
+                cluster_perfumes['season_tags'].str.contains(
+                    request_dict["season_tags"], na=False, case=False
+                )
+            ]
+            if not season_filtered.empty:
+                cluster_perfumes = season_filtered
+                logger.info(f"  계절 '{request_dict['season_tags']}' 필터링: → {len(cluster_perfumes)}개")
+
+        # 시간 필터링
+        if 'time_tags' in cluster_perfumes.columns:
+            time_filtered = cluster_perfumes[
+                cluster_perfumes['time_tags'].str.contains(
+                    request_dict["time_tags"], na=False, case=False
+                )
+            ]
+            if not time_filtered.empty:
+                cluster_perfumes = time_filtered
+                logger.info(f"  시간 '{request_dict['time_tags']}' 필터링: → {len(cluster_perfumes)}개")
+
+        # ✅ 상위 15개 노트 추출
+        recommended_notes = get_top_notes_from_cluster(cluster_perfumes, top_k=15)
+
+        # ✅ 상위 10개 향수 인덱스 추출
+        selected_indices = get_perfume_indices(cluster_perfumes, top_k=10)
+
+        # 처리 시간 계산
+        processing_time = (datetime.now() - start_time).total_seconds()
+
+        # ✅ 새로운 형태의 응답 구성
+        result = {
+            "cluster": predicted_cluster,
+            "description": cluster_description,
+            "proba": [round(float(prob), 4) for prob in cluster_probabilities],  # 소수점 4자리로 반올림
+            "recommended_notes": recommended_notes,
+            "selected_idx": selected_indices,
+            "metadata": {
+                "processing_time_seconds": round(processing_time, 3),
+                "total_cluster_perfumes": len(cluster_perfumes),
+                "confidence": round(confidence, 3),
+                "method": "AI 감정 클러스터 모델",
+                "filters_applied": {
+                    "gender": request_dict["gender"],
+                    "season": request_dict["season_tags"],
+                    "time": request_dict["time_tags"]
+                }
+            }
+        }
+
+        logger.info(f"✅ 클러스터 기반 추천 완료: 클러스터 {predicted_cluster} (소요시간: {processing_time:.3f}초)")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"❌ 클러스터 기반 추천 실패: {e}")
+        raise e
+
+
+# ─── 9. AI 감정 클러스터 모델 추천 (기존 유지) ─────────────────────────────────────
 def predict_with_emotion_cluster_model(request_dict: dict) -> pd.DataFrame:
-    """✅ 수정된 감정 클러스터 모델을 사용한 AI 추천"""
+    """✅ 수정된 감정 클러스터 모델을 사용한 AI 추천 (기존 방식 유지)"""
 
     try:
         # 모델 가져오기
@@ -524,7 +754,7 @@ def predict_with_emotion_cluster_model(request_dict: dict) -> pd.DataFrame:
         raise e
 
 
-# ─── 8. 룰 기반 추천 시스템 ─────────────────────────────────────
+# ─── 10. 룰 기반 추천 시스템 (기존 유지) ─────────────────────────────────────
 def rule_based_recommendation(request_data: dict, top_k: int = 10) -> List[dict]:
     """룰 기반 향수 추천 시스템 (AI 모델 대체)"""
     logger.info("🎯 룰 기반 추천 시스템 시작")
@@ -708,7 +938,7 @@ def rule_based_recommendation(request_data: dict, top_k: int = 10) -> List[dict]
         return random_sample.to_dict('records')
 
 
-# ─── 9. 유틸리티 함수들 ─────────────────────────────────────
+# ─── 11. 유틸리티 함수들 ─────────────────────────────────────
 def get_emotion_text(row):
     """감정 정보를 추출합니다."""
     # 1순위: desired_impression
@@ -749,7 +979,7 @@ def get_recommendation_reason(score: float, method: str) -> str:
             return f"🎲 새로운 스타일 제안 (일치도 {score:.1%}) - 도전해보세요!"
 
 
-# ─── 10. 레거시 스키마 정의 (하위 호환성) ────────────────────────────────────────────────
+# ─── 12. 레거시 스키마 정의 (하위 호환성) ────────────────────────────────────────────────
 class PerfumeRecommendItem(BaseModel):
     name: str
     brand: str
@@ -761,7 +991,7 @@ class PerfumeRecommendItem(BaseModel):
     method: Optional[str] = None
 
 
-# ─── 11. 라우터 설정 ────────────────────────────────────────────────
+# ─── 13. 라우터 설정 ────────────────────────────────────────────────
 router = APIRouter(prefix="/perfumes", tags=["Perfume"])
 
 # 시작 시 모델 가용성 확인
@@ -774,35 +1004,139 @@ else:
 logger.info("✅ 추천 시스템 초기화 완료")
 
 
-# ─── 12. API 엔드포인트들 ────────────────────────────────────────────────
+# ─── 14. 🆕 새로운 클러스터 기반 추천 API ────────────────────────────────────────────────
+
+@router.post(
+    "/recommend-cluster",
+    response_model=ClusterRecommendResponse,
+    summary="클러스터 기반 향수 추천 (새로운 응답 형태)",
+    description=(
+            "🆕 **새로운 클러스터 기반 추천 API**\n\n"
+            "사용자의 선호도를 기반으로 AI 모델이 감정 클러스터를 예측하고,\n"
+            "해당 클러스터의 정보와 추천 향수 인덱스를 반환합니다.\n\n"
+            "**🤖 응답 형태:**\n"
+            "- `cluster`: 예측된 감정 클러스터 인덱스 (0-5)\n"
+            "- `description`: 클러스터 설명 (감정 특성)\n"
+            "- `proba`: 6개 클러스터별 softmax 확률 배열\n"
+            "- `recommended_notes`: 해당 클러스터의 상위 15개 인기 노트\n"
+            "- `selected_idx`: 추천 향수들의 데이터셋 인덱스 10개\n\n"
+            "**📋 입력 파라미터:**\n"
+            "- encoder.pkl과 완전 호환되는 6개 특성 입력\n"
+            "- AI 모델 우선, 실패 시 룰 기반 폴백\n\n"
+            "**✨ 활용 방법:**\n"
+            "- 클라이언트에서 `selected_idx`로 해당 향수들의 상세 정보 조회\n"
+            "- `proba` 정보로 사용자 선호도 분석 가능\n"
+            "- `recommended_notes`로 향수 노트 기반 UI 구성 가능"
+    )
+)
+def recommend_cluster_based(request: RecommendRequest):
+    request_start_time = datetime.now()
+    logger.info(f"🆕 클러스터 기반 향수 추천 요청: {request}")
+
+    # ✅ 입력 검증
+    if not validate_request_categories(request):
+        logger.error("❌ 잘못된 카테고리 값 입력")
+        raise HTTPException(
+            status_code=400,
+            detail=f"지원되지 않는 카테고리 값입니다. 지원되는 값: {SUPPORTED_CATEGORIES}"
+        )
+
+    # 요청 데이터를 딕셔너리로 변환
+    request_dict = request.dict()
+
+    try:
+        # AI 모델 시도
+        if _model_available:
+            try:
+                logger.info("🤖 AI 감정 클러스터 모델로 클러스터 기반 추천 시도")
+                result = predict_cluster_recommendation(request_dict)
+
+                # 처리 시간 업데이트
+                total_processing_time = (datetime.now() - request_start_time).total_seconds()
+                result["metadata"]["total_processing_time_seconds"] = round(total_processing_time, 3)
+
+                logger.info(f"✅ 클러스터 기반 추천 성공 (클러스터: {result['cluster']}, 소요시간: {total_processing_time:.3f}초)")
+
+                return ClusterRecommendResponse(**result)
+
+            except Exception as e:
+                logger.warning(f"⚠️ AI 모델 클러스터 추천 실패: {e}")
+                # 룰 기반으로 폴백하되, 클러스터 형태로 변환
+                logger.info("📋 룰 기반으로 폴백하여 클러스터 형태 응답 생성")
+
+        else:
+            logger.info("📋 AI 모델 사용 불가, 룰 기반으로 클러스터 형태 응답 생성")
+
+        # 룰 기반 폴백 - 클러스터 형태로 변환
+        rule_results = rule_based_recommendation(request_dict, 10)
+        rule_df = pd.DataFrame(rule_results)
+
+        # 가상의 클러스터 정보 생성 (룰 기반이므로)
+        fallback_cluster = 2  # 기본 클러스터 (우아함, 친근함)
+        fallback_proba = [0.1, 0.15, 0.4, 0.15, 0.1, 0.1]  # 가상 확률
+
+        # 룰 기반 결과에서 노트 추출
+        fallback_notes = get_top_notes_from_cluster(rule_df, top_k=15)
+
+        # 룰 기반 결과에서 인덱스 추출
+        fallback_indices = get_perfume_indices(rule_df, top_k=10)
+
+        total_processing_time = (datetime.now() - request_start_time).total_seconds()
+
+        fallback_result = {
+            "cluster": fallback_cluster,
+            "description": EMOTION_CLUSTER_MAP[fallback_cluster] + " (룰 기반 추정)",
+            "proba": fallback_proba,
+            "recommended_notes": fallback_notes,
+            "selected_idx": fallback_indices,
+            "metadata": {
+                "processing_time_seconds": round(total_processing_time, 3),
+                "total_cluster_perfumes": len(rule_df),
+                "confidence": 0.4,  # 룰 기반이므로 낮은 신뢰도
+                "method": "룰 기반 (AI 모델 대체)",
+                "fallback_used": True,
+                "filters_applied": {
+                    "gender": request_dict["gender"],
+                    "season": request_dict["season_tags"],
+                    "time": request_dict["time_tags"]
+                }
+            }
+        }
+
+        logger.info(f"✅ 룰 기반 클러스터 형태 추천 완료 (소요시간: {total_processing_time:.3f}초)")
+
+        return ClusterRecommendResponse(**fallback_result)
+
+    except Exception as e:
+        logger.error(f"❌ 클러스터 기반 추천 중 예외 발생: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"클러스터 기반 추천 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
+# ─── 15. 기존 API들 (하위 호환성 유지) ────────────────────────────────────────────────
 
 @router.post(
     "/recommend",
     response_model=List[PerfumeRecommendItem],
-    summary="향수 추천 (encoder.pkl 호환 버전)",
+    summary="향수 추천 (기존 방식, 하위 호환성)",
     description=(
+            "**🔄 기존 향수 추천 API (하위 호환성 유지)**\n\n"
             "사용자의 선호도를 기반으로 향수를 추천합니다.\n\n"
             "**🤖 추천 방식:**\n"
             "1. **AI 감정 클러스터 모델**: 6개 입력 → 6개 감정 클러스터 분류 → 해당 클러스터 향수 추천\n"
             "2. **룰 기반 Fallback**: 조건부 필터링 + 스코어링 (모델이 없거나 실패한 경우)\n"
             "3. **다양성 보장**: 브랜드별 균형 잡힌 추천\n\n"
-            "**📋 입력 파라미터 (encoder.pkl 호환):**\n"
-            "- `gender`: 성별 (men/unisex/women)\n"
-            "- `season_tags`: 계절 (fall/spring/summer/winter)\n"
-            "- `time_tags`: 시간대 (day/night)\n"
-            "- `desired_impression`: 원하는 인상 조합 (confident, fresh/confident, mysterious/elegant, friendly/pure, friendly)\n"
-            "- `activity`: 활동 (casual/date/work)\n"
-            "- `weather`: 날씨 (any/cold/hot/rainy)\n\n"
-            "**✨ 특징:**\n"
-            "- encoder.pkl과 완전 호환\n"
-            "- OrdinalEncoder 사용으로 6개 특성 입력\n"
-            "- 견고한 에러 핸들링\n"
-            "- 상세한 추천 이유 제공"
+            "**⚠️ 권장사항:**\n"
+            "- 새로운 프로젝트는 `/recommend-cluster` API 사용 권장\n"
+            "- 더 구조화된 응답과 클러스터 정보 제공\n"
+            "- 이 API는 기존 클라이언트 호환성을 위해 유지"
     )
 )
 def recommend_perfumes(request: RecommendRequest):
     request_start_time = datetime.now()
-    logger.info(f"🎯 향수 추천 요청 시작: {request}")
+    logger.info(f"🎯 향수 추천 요청 시작 (기존 방식): {request}")
 
     # ✅ 입력 검증
     if not validate_request_categories(request):
@@ -995,6 +1329,16 @@ def get_model_status():
             "api_schema_categories": SUPPORTED_CATEGORIES,
             "encoder_fallback_available": _fallback_encoder is not None,
             "sklearn_compatibility": "OrdinalEncoder 사용 (encoder.pkl 호환)"
+        },
+        "🆕_new_features": {
+            "cluster_based_api": "/perfumes/recommend-cluster",
+            "cluster_response_format": {
+                "cluster": "int (0-5)",
+                "description": "str",
+                "proba": "List[float] (length 6)",
+                "recommended_notes": "List[str] (max 15)",
+                "selected_idx": "List[int] (max 10)"
+            }
         }
     }
 
@@ -1068,7 +1412,7 @@ def health_check():
             "sklearn_compatible": False
         }
 
-    # 추천 시스템 테스트
+    # 🆕 클러스터 기반 추천 테스트
     try:
         test_request = {
             "gender": "women",
@@ -1082,25 +1426,39 @@ def health_check():
         start_time = datetime.now()
         if _model_available:
             try:
-                test_results = predict_with_emotion_cluster_model(test_request)
-                method = "AI 감정 클러스터 모델"
+                cluster_result = predict_cluster_recommendation(test_request)
+                method = "AI 클러스터 모델"
+                test_success = True
+                result_count = len(cluster_result.get("selected_idx", []))
             except:
                 rule_results = rule_based_recommendation(test_request, 3)
                 test_results = pd.DataFrame(rule_results)
                 method = "룰 기반 (AI 실패)"
+                test_success = True
+                result_count = len(test_results)
         else:
             rule_results = rule_based_recommendation(test_request, 3)
             test_results = pd.DataFrame(rule_results)
             method = "룰 기반 (모델 크기 부족)"
+            test_success = True
+            result_count = len(test_results)
 
         processing_time = (datetime.now() - start_time).total_seconds()
 
         health_status["checks"]["recommendation_system"] = {
-            "status": "ok" if len(test_results) > 0 else "error",
-            "test_result_count": len(test_results),
+            "status": "ok" if test_success and result_count > 0 else "error",
+            "test_result_count": result_count,
             "processing_time_seconds": round(processing_time, 3),
             "method": method
         }
+
+        # 🆕 클러스터 API 테스트 추가
+        health_status["checks"]["cluster_api"] = {
+            "status": "ok" if _model_available else "warning",
+            "cluster_api_available": _model_available,
+            "fallback_available": True
+        }
+
     except Exception as e:
         health_status["checks"]["recommendation_system"] = {
             "status": "error",
@@ -1167,7 +1525,21 @@ def test_recommendation_system():
         try:
             start_time = datetime.now()
 
-            # AI 모델 또는 룰 기반 추천 테스트
+            # 🆕 클러스터 기반 추천 테스트
+            cluster_result = None
+            cluster_success = False
+
+            if _model_available:
+                try:
+                    cluster_result = predict_cluster_recommendation(test_case["request"])
+                    cluster_success = True
+                    cluster_method = "AI 감정 클러스터 모델"
+                except Exception as e:
+                    cluster_success = False
+                    cluster_error = str(e)
+                    cluster_method = "실패"
+
+            # 기존 방식 추천 테스트
             if _model_available:
                 try:
                     ai_results = predict_with_emotion_cluster_model(test_case["request"])
@@ -1184,21 +1556,36 @@ def test_recommendation_system():
 
             processing_time = (datetime.now() - start_time).total_seconds()
 
-            results.append({
+            # 결과 구성
+            test_result = {
                 "test_name": test_case["name"],
                 "request": test_case["request"],
                 "success": True,
-                "method": method,
-                "result_count": len(result_data),
-                "processing_time_seconds": round(processing_time, 3),
-                "sample_results": [
-                    {
-                        "name": r.get("name", ""),
-                        "brand": r.get("brand", ""),
-                        "score": round(r.get("score", 0), 3)
-                    } for r in result_data
-                ]
-            })
+                "legacy_api": {
+                    "method": method,
+                    "result_count": len(result_data),
+                    "sample_results": [
+                        {
+                            "name": r.get("name", ""),
+                            "brand": r.get("brand", ""),
+                            "score": round(r.get("score", 0), 3)
+                        } for r in result_data
+                    ]
+                },
+                "🆕_cluster_api": {
+                    "success": cluster_success,
+                    "method": cluster_method if cluster_success else "실패",
+                    "cluster": cluster_result.get("cluster") if cluster_result else None,
+                    "description": cluster_result.get("description") if cluster_result else None,
+                    "confidence": cluster_result["proba"][cluster_result["cluster"]] if cluster_result else None,
+                    "notes_count": len(cluster_result.get("recommended_notes", [])) if cluster_result else 0,
+                    "selected_perfumes_count": len(cluster_result.get("selected_idx", [])) if cluster_result else 0,
+                    "error": cluster_error if not cluster_success else None
+                },
+                "processing_time_seconds": round(processing_time, 3)
+            }
+
+            results.append(test_result)
 
         except Exception as e:
             results.append({
@@ -1226,12 +1613,275 @@ def test_recommendation_system():
         "emotion_clusters": EMOTION_CLUSTER_MAP,
         "supported_categories": SUPPORTED_CATEGORIES,  # ✅ encoder.pkl 호환 카테고리
         "sklearn_version": sklearn_version,  # ✅ 추가
+        "🆕_new_features": {
+            "cluster_api_endpoint": "/perfumes/recommend-cluster",
+            "cluster_response_includes": [
+                "cluster (int)", "description (str)", "proba (List[float])",
+                "recommended_notes (List[str])", "selected_idx (List[int])"
+            ]
+        },
         "test_results": results,
         "summary": {
             "total_tests": len(test_cases),
             "successful_tests": sum(1 for r in results if r["success"]),
+            "cluster_api_successful_tests": sum(1 for r in results if r.get("🆕_cluster_api", {}).get("success", False)),
             "average_processing_time": round(
                 sum(r.get("processing_time_seconds", 0) for r in results) / len(results), 3
             )
         }
     }
+
+
+# ─── 16. 🆕 노트 분석 전용 API (추가 기능) ────────────────────────────────────────────────
+
+@router.get(
+    "/notes/analysis",
+    summary="향수 노트 분석 (클러스터별)",
+    description="각 감정 클러스터별로 인기 있는 향수 노트를 분석합니다."
+)
+def analyze_notes_by_cluster():
+    """클러스터별 노트 분석 정보를 반환합니다."""
+
+    cluster_notes_analysis = {}
+
+    try:
+        for cluster_id in range(6):  # 0-5 클러스터
+            if 'emotion_cluster' in df.columns:
+                cluster_perfumes = df[df['emotion_cluster'] == cluster_id]
+
+                if len(cluster_perfumes) > 0:
+                    # 상위 15개 노트 추출
+                    top_notes = get_top_notes_from_cluster(cluster_perfumes, top_k=15)
+
+                    # 노트 빈도 계산
+                    all_notes = []
+                    for _, row in cluster_perfumes.iterrows():
+                        notes = parse_notes_from_string(row.get('notes', ''))
+                        all_notes.extend(notes)
+
+                    note_counter = Counter(all_notes)
+
+                    cluster_notes_analysis[cluster_id] = {
+                        "cluster_name": EMOTION_CLUSTER_MAP.get(cluster_id, f"클러스터 {cluster_id}"),
+                        "perfume_count": len(cluster_perfumes),
+                        "total_notes_found": len(all_notes),
+                        "unique_notes_count": len(set(all_notes)),
+                        "top_15_notes": top_notes,
+                        "top_5_with_frequency": [
+                            {"note": note, "frequency": count}
+                            for note, count in note_counter.most_common(5)
+                        ]
+                    }
+                else:
+                    cluster_notes_analysis[cluster_id] = {
+                        "cluster_name": EMOTION_CLUSTER_MAP.get(cluster_id, f"클러스터 {cluster_id}"),
+                        "perfume_count": 0,
+                        "error": "해당 클러스터에 향수가 없습니다."
+                    }
+
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "total_perfumes": len(df),
+            "cluster_analysis": cluster_notes_analysis,
+            "summary": {
+                "clusters_with_data": sum(1 for analysis in cluster_notes_analysis.values() if "error" not in analysis),
+                "total_unique_notes": len(set(
+                    note for analysis in cluster_notes_analysis.values()
+                    if "top_15_notes" in analysis
+                    for note in analysis["top_15_notes"]
+                ))
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"❌ 노트 분석 중 오류: {e}")
+        return {
+            "error": f"노트 분석 중 오류가 발생했습니다: {str(e)}",
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+@router.get(
+    "/notes/search/{note_name}",
+    summary="특정 노트가 포함된 향수 검색",
+    description="지정된 노트가 포함된 향수들을 검색합니다."
+)
+def search_perfumes_by_note(note_name: str, limit: int = 20):
+    """특정 노트가 포함된 향수들을 검색합니다."""
+
+    try:
+        note_name = note_name.lower().strip()
+        matching_perfumes = []
+
+        for idx, row in df.iterrows():
+            notes = parse_notes_from_string(row.get('notes', ''))
+
+            if note_name in notes:
+                perfume_info = {
+                    "index": int(idx),
+                    "name": str(row.get('name', '')),
+                    "brand": str(row.get('brand', '')),
+                    "notes": str(row.get('notes', '')),
+                    "emotion_cluster": int(row.get('emotion_cluster', 0)),
+                    "cluster_description": EMOTION_CLUSTER_MAP.get(int(row.get('emotion_cluster', 0)), "알 수 없음"),
+                    "gender": str(row.get('gender', '')),
+                    "season_tags": str(row.get('season_tags', '')),
+                    "time_tags": str(row.get('time_tags', ''))
+                }
+                matching_perfumes.append(perfume_info)
+
+        # 클러스터별로 정렬
+        matching_perfumes.sort(key=lambda x: x['emotion_cluster'])
+
+        # 제한된 개수만 반환
+        limited_results = matching_perfumes[:limit]
+
+        # 클러스터별 분포 계산
+        cluster_distribution = {}
+        for perfume in matching_perfumes:
+            cluster = perfume['emotion_cluster']
+            cluster_distribution[cluster] = cluster_distribution.get(cluster, 0) + 1
+
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "search_note": note_name,
+            "total_matches": len(matching_perfumes),
+            "returned_count": len(limited_results),
+            "cluster_distribution": cluster_distribution,
+            "matching_perfumes": limited_results
+        }
+
+    except Exception as e:
+        logger.error(f"❌ 노트 검색 중 오류: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"노트 검색 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
+# ─── 17. 🆕 클러스터 정보 API ────────────────────────────────────────────────
+
+@router.get(
+    "/clusters/info",
+    summary="감정 클러스터 정보",
+    description="모든 감정 클러스터의 정보와 통계를 반환합니다."
+)
+def get_cluster_info():
+    """감정 클러스터 정보와 통계를 반환합니다."""
+
+    try:
+        cluster_info = {}
+
+        for cluster_id in range(6):
+            cluster_perfumes = df[
+                df['emotion_cluster'] == cluster_id] if 'emotion_cluster' in df.columns else pd.DataFrame()
+
+            cluster_info[cluster_id] = {
+                "cluster_id": cluster_id,
+                "description": EMOTION_CLUSTER_MAP.get(cluster_id, f"클러스터 {cluster_id}"),
+                "perfume_count": len(cluster_perfumes),
+                "percentage": round(len(cluster_perfumes) / len(df) * 100, 2) if len(df) > 0 else 0
+            }
+
+            if len(cluster_perfumes) > 0:
+                # 성별 분포
+                gender_dist = cluster_perfumes[
+                    'gender'].value_counts().to_dict() if 'gender' in cluster_perfumes.columns else {}
+
+                # 브랜드 분포 (상위 5개)
+                brand_dist = cluster_perfumes['brand'].value_counts().head(
+                    5).to_dict() if 'brand' in cluster_perfumes.columns else {}
+
+                cluster_info[cluster_id].update({
+                    "gender_distribution": gender_dist,
+                    "top_5_brands": brand_dist,
+                    "sample_perfumes": [
+                        {
+                            "name": row['name'],
+                            "brand": row['brand']
+                        } for _, row in cluster_perfumes.head(3).iterrows()
+                    ]
+                })
+
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "total_perfumes": len(df),
+            "total_clusters": 6,
+            "cluster_details": cluster_info,
+            "emotion_cluster_map": EMOTION_CLUSTER_MAP
+        }
+
+    except Exception as e:
+        logger.error(f"❌ 클러스터 정보 조회 중 오류: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"클러스터 정보 조회 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
+@router.get(
+    "/clusters/{cluster_id}/perfumes",
+    summary="특정 클러스터의 향수 목록",
+    description="지정된 감정 클러스터에 속한 향수들의 목록을 반환합니다."
+)
+def get_cluster_perfumes(cluster_id: int, limit: int = 50, offset: int = 0):
+    """특정 클러스터의 향수 목록을 반환합니다."""
+
+    if cluster_id < 0 or cluster_id > 5:
+        raise HTTPException(
+            status_code=400,
+            detail="클러스터 ID는 0-5 범위여야 합니다."
+        )
+
+    try:
+        if 'emotion_cluster' not in df.columns:
+            raise HTTPException(
+                status_code=500,
+                detail="데이터셋에 emotion_cluster 컬럼이 없습니다."
+            )
+
+        cluster_perfumes = df[df['emotion_cluster'] == cluster_id]
+
+        if len(cluster_perfumes) == 0:
+            return {
+                "cluster_id": cluster_id,
+                "description": EMOTION_CLUSTER_MAP.get(cluster_id, f"클러스터 {cluster_id}"),
+                "total_count": 0,
+                "perfumes": [],
+                "message": "해당 클러스터에 향수가 없습니다."
+            }
+
+        # 페이지네이션 적용
+        paginated_perfumes = cluster_perfumes.iloc[offset:offset + limit]
+
+        perfume_list = []
+        for idx, row in paginated_perfumes.iterrows():
+            perfume_list.append({
+                "index": int(idx),
+                "name": str(row.get('name', '')),
+                "brand": str(row.get('brand', '')),
+                "image_url": str(row.get('image_url', '')),
+                "notes": str(row.get('notes', '')),
+                "gender": str(row.get('gender', '')),
+                "season_tags": str(row.get('season_tags', '')),
+                "time_tags": str(row.get('time_tags', '')),
+                "desired_impression": str(row.get('desired_impression', ''))
+            })
+
+        return {
+            "cluster_id": cluster_id,
+            "description": EMOTION_CLUSTER_MAP.get(cluster_id, f"클러스터 {cluster_id}"),
+            "total_count": len(cluster_perfumes),
+            "returned_count": len(perfume_list),
+            "offset": offset,
+            "limit": limit,
+            "has_more": offset + limit < len(cluster_perfumes),
+            "perfumes": perfume_list
+        }
+
+    except Exception as e:
+        logger.error(f"❌ 클러스터 향수 목록 조회 중 오류: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"클러스터 향수 목록 조회 중 오류가 발생했습니다: {str(e)}"
+        )
