@@ -80,6 +80,69 @@ class RecommendedPerfume(BaseModel):
     emotion_cluster: Optional[int] = Field(None, description="감정 클러스터 ID (0-5)")
 
 
+# 🆕 클러스터 기반 추천 응답 스키마
+class ClusterRecommendResponse(BaseModel):
+    """클러스터 기반 향수 추천 응답"""
+
+    cluster: int = Field(
+        ...,
+        description="예측된 감정 클러스터 인덱스 (0-5)",
+        ge=0,
+        le=5
+    )
+
+    description: str = Field(
+        ...,
+        description="클러스터 설명 (감정 특성)"
+    )
+
+    proba: List[float] = Field(
+        ...,
+        description="6개 클러스터별 softmax 확률 배열",
+        min_items=6,
+        max_items=6
+    )
+
+    recommended_notes: List[str] = Field(
+        ...,
+        description="해당 클러스터에서 가장 인기 있는 상위 15개 노트",
+        max_items=15
+    )
+
+    selected_idx: List[int] = Field(
+        ...,
+        description="추천 향수들의 데이터셋 인덱스 10개",
+        max_items=10
+    )
+
+    # 메타데이터 (선택사항)
+    metadata: Optional[dict] = Field(
+        None,
+        description="추가 메타데이터 (처리 시간, 필터링 정보 등)"
+    )
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "cluster": 2,
+                "description": "우아함, 친근함",
+                "proba": [0.01, 0.03, 0.85, 0.02, 0.05, 0.04],
+                "recommended_notes": [
+                    "jasmine", "rose", "amber", "vanilla", "sandalwood",
+                    "bergamot", "cedar", "musk", "patchouli", "lavender",
+                    "orange", "lemon", "ylang-ylang", "geranium", "oakmoss"
+                ],
+                "selected_idx": [23, 45, 102, 200, 233, 305, 399, 410, 487, 512],
+                "metadata": {
+                    "processing_time_seconds": 0.245,
+                    "total_cluster_perfumes": 45,
+                    "confidence": 0.85,
+                    "method": "AI 감정 클러스터 모델"
+                }
+            }
+        }
+
+
 # ✅ 추천 결과 응답 구조 (확장된 메타데이터 포함)
 class RecommendResponse(BaseModel):
     """전체 추천 결과 응답"""
