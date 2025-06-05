@@ -1,4 +1,4 @@
-# main.py - Temporary Auth 제거 및 최적화 버전
+# main.py - 2차 추천 라우터 추가 및 최적화 버전
 import logging
 import sys
 import traceback
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Whiff API",
     description="AI 기반 향수 추천 및 시향 코스 추천 서비스의 백엔드 API입니다.",
-    version="1.1.0"
+    version="1.2.0"  # 2차 추천 기능 추가로 버전 업데이트
 )
 
 # CORS 설정
@@ -108,6 +108,7 @@ async def startup_event():
         logger.info(f"📋 기본 설정:")
         logger.info(f"  - 포트: {port}")
         logger.info(f"  - 환경: {environment}")
+        logger.info(f"  - API 버전: 1.2.0 (2차 추천 기능 포함)")
 
         # Firebase 초기화 확인 (빠른 체크)
         try:
@@ -133,11 +134,11 @@ async def shutdown_event():
     logger.info("🔚 Whiff API 서버가 종료됩니다.")
 
 
-# 🎯 핵심 라우터만 등록 (Temporary Auth 제거)
+# 🎯 모든 라우터 등록 (2차 추천 라우터 포함)
 try:
-    logger.info("📋 핵심 라우터 등록 시작...")
+    logger.info("📋 라우터 등록 시작...")
 
-    # 필수 라우터들
+    # 기존 라우터들
     from routers.perfume_router import router as perfume_router
     from routers.store_router import router as store_router
     from routers.course_router import router as course_router
@@ -147,17 +148,22 @@ try:
     from routers.recommendation_save_router import router as recommendation_save_router
     from routers.user_router import router as user_router
 
-    # 라우터 등록
-    app.include_router(perfume_router)
-    app.include_router(store_router)
-    app.include_router(course_router)
-    app.include_router(recommend_router)
-    app.include_router(diary_router)
-    app.include_router(auth_router)
-    app.include_router(user_router)
-    app.include_router(recommendation_save_router)
+    # 🆕 2차 추천 라우터 추가
+    from routers.recommend_2nd_router import router as recommend_2nd_router
 
-    logger.info("✅ 모든 핵심 라우터 등록 완료")
+    # 라우터 등록 (등록 순서 중요)
+    app.include_router(perfume_router)  # 기본 향수 정보
+    app.include_router(store_router)  # 매장 정보
+    app.include_router(course_router)  # 시향 코스
+    app.include_router(recommend_router)  # 1차 추천 (기존)
+    app.include_router(recommend_2nd_router)  # 🆕 2차 추천 (노트 기반)
+    app.include_router(diary_router)  # 시향 일기
+    app.include_router(auth_router)  # 인증
+    app.include_router(user_router)  # 사용자 관리
+    app.include_router(recommendation_save_router)  # 추천 저장
+
+    logger.info("✅ 모든 라우터 등록 완료")
+    logger.info("🆕 2차 추천 라우터 (/perfumes/recommend-2nd) 추가됨")
 
 except Exception as e:
     logger.error(f"❌ 라우터 등록 중 오류: {e}")
@@ -170,16 +176,22 @@ def read_root():
     return {
         "message": "✅ Whiff API is running!",
         "status": "ok",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "environment": "production" if os.getenv("RENDER") else "development",
         "port": os.getenv("PORT", "8000"),
         "features": [
-            "향수 추천",
+            "향수 추천 (1차)",
+            "향수 추천 (2차 - 노트 기반)",  # 🆕 추가됨
             "시향 일기",
             "매장 정보",
             "코스 추천",
             "사용자 인증",
             "회원 관리"
+        ],
+        "new_features": [
+            "🆕 2차 추천 API (/perfumes/recommend-2nd)",
+            "🎯 사용자 노트 선호도 기반 정밀 추천",
+            "🧮 AI 감정 클러스터 + 노트 매칭 알고리즘"
         ]
     }
 
@@ -197,10 +209,17 @@ def health_check():
         return {
             "status": "ok",
             "service": "Whiff API",
-            "version": "1.1.0",
+            "version": "1.2.0",
             "environment": "production" if os.getenv("RENDER") else "development",
             "port": os.getenv("PORT", "8000"),
-            "uptime": "running"
+            "uptime": "running",
+            "features_available": [
+                "1차 추천",
+                "2차 추천 (노트 기반)",  # 🆕
+                "시향 일기",
+                "매장 정보",
+                "사용자 인증"
+            ]
         }
     except Exception as e:
         logger.error(f"Health check failed: {e}")
@@ -238,7 +257,7 @@ def get_server_status():
 
         return {
             "service": "Whiff API",
-            "version": "1.1.0",
+            "version": "1.2.0",
             "status": "running",
             "environment": "production" if os.getenv("RENDER") else "development",
             "firebase": firebase_status,
@@ -251,12 +270,27 @@ def get_server_status():
                 "email": "SMTP (Gmail)"
             },
             "endpoints": {
-                "perfumes": "향수 정보 및 추천",
+                "perfumes": "향수 정보 및 1차 추천",
+                "perfumes_2nd": "🆕 2차 추천 (노트 기반)",  # 🆕 추가
                 "stores": "매장 정보",
                 "courses": "시향 코스 추천",
                 "diaries": "시향 일기",
                 "auth": "사용자 인증",
                 "users": "사용자 관리"
+            },
+            "recommendation_system": {
+                "primary_recommendation": {
+                    "endpoint": "/perfumes/recommend-cluster",
+                    "method": "AI 감정 클러스터 모델",
+                    "input": "사용자 선호도 6개 특성",
+                    "output": "클러스터 + 향수 인덱스"
+                },
+                "secondary_recommendation": {  # 🆕 추가
+                    "endpoint": "/perfumes/recommend-2nd",
+                    "method": "노트 매칭 + 감정 가중치",
+                    "input": "노트 선호도 + 감정 확률 + 선택 인덱스",
+                    "output": "정밀 점수 기반 추천"
+                }
             }
         }
     except Exception as e:
@@ -267,6 +301,72 @@ def get_server_status():
         )
 
 
+# ✅ API 문서 정보
+@app.get("/api-info", summary="API 정보", operation_id="get_api_info")
+def get_api_info():
+    """API 기능 및 엔드포인트 정보 제공"""
+    return {
+        "api_name": "Whiff API",
+        "version": "1.2.0",
+        "description": "AI 기반 향수 추천 및 시향 코스 추천 서비스",
+        "documentation_url": "/docs",
+        "redoc_url": "/redoc",
+
+        "recommendation_flow": {
+            "step_1": {
+                "title": "1차 추천",
+                "endpoint": "/perfumes/recommend-cluster",
+                "description": "사용자 선호도 → AI 감정 클러스터 → 향수 인덱스 목록",
+                "input_example": {
+                    "gender": "women",
+                    "season_tags": "spring",
+                    "time_tags": "day",
+                    "desired_impression": "confident, fresh",
+                    "activity": "casual",
+                    "weather": "hot"
+                }
+            },
+            "step_2": {
+                "title": "2차 추천 (🆕 신규)",
+                "endpoint": "/perfumes/recommend-2nd",
+                "description": "노트 선호도 + 1차 결과 → 정밀 점수 계산 → 최종 추천",
+                "input_example": {
+                    "user_note_scores": {
+                        "jasmine": 5,
+                        "rose": 4,
+                        "amber": 3,
+                        "musk": 0,
+                        "citrus": 2,
+                        "vanilla": 1
+                    },
+                    "emotion_proba": [0.01, 0.03, 0.85, 0.02, 0.05, 0.04],
+                    "selected_idx": [23, 45, 102, 200, 233, 305, 399, 410, 487, 512]
+                }
+            }
+        },
+
+        "main_features": [
+            "🤖 AI 감정 클러스터 기반 1차 추천",
+            "🎯 노트 선호도 기반 2차 정밀 추천",
+            "📝 시향 일기 작성 및 관리",
+            "🗺️ 위치 기반 시향 코스 추천",
+            "🏪 매장 정보 및 검색",
+            "🔐 Firebase 인증 시스템",
+            "📧 이메일 발송 기능",
+            "👥 사용자 관리 (회원가입/탈퇴)"
+        ],
+
+        "technical_stack": {
+            "framework": "FastAPI",
+            "ml_framework": "TensorFlow + scikit-learn",
+            "authentication": "Firebase Auth",
+            "database": "SQLite + JSON Files",
+            "deployment": "Render.com",
+            "email": "SMTP (Gmail)"
+        }
+    }
+
+
 # ✅ Render.com을 위한 메인 실행 부분
 if __name__ == "__main__":
     import uvicorn
@@ -275,6 +375,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
 
     logger.info(f"🚀 서버 시작: 포트 {port}")
+    logger.info(f"🆕 2차 추천 기능이 포함된 Whiff API v1.2.0")
 
     uvicorn.run(
         "main:app",
