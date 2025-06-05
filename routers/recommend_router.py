@@ -3,8 +3,6 @@ import pickle
 import logging
 import random
 import sys
-import subprocess
-import requests
 import numpy as np
 from datetime import datetime
 from fastapi import APIRouter, HTTPException
@@ -65,7 +63,6 @@ _model = None
 _encoder = None
 _model_available = False
 _fallback_encoder = None
-_model_download_attempted = False
 
 # ─── 4. 감정 클러스터 매핑 ─────────────────────────────────────
 EMOTION_CLUSTER_MAP = {
@@ -78,154 +75,48 @@ EMOTION_CLUSTER_MAP = {
 }
 
 
-# ─── 5. Git LFS 포인터 파일 감지 ─────────────────────────────────────
-def is_git_lfs_pointer_file(file_path: str) -> bool:
-    """파일이 Git LFS 포인터 파일인지 확인합니다."""
-    try:
-        if not os.path.exists(file_path):
-            return False
-
-        with open(file_path, 'r', encoding='utf-8') as f:
-            first_line = f.readline().strip()
-            return first_line.startswith('version https://git-lfs.github.com/spec/')
-    except (UnicodeDecodeError, IOError):
-        # 바이너리 파일이면 Git LFS 포인터가 아님
-        return False
-
-
-def get_file_info(file_path: str) -> Dict[str, Any]:
-    """파일의 상세 정보를 반환합니다."""
-    if not os.path.exists(file_path):
-        return {"exists": False}
-
-    info = {
-        "exists": True,
-        "size": os.path.getsize(file_path),
-        "is_lfs_pointer": is_git_lfs_pointer_file(file_path)
-    }
-
-    # 파일 시작 부분 확인
-    try:
-        with open(file_path, 'rb') as f:
-            first_bytes = f.read(100)
-            info["first_bytes_hex"] = first_bytes[:20].hex()
-            info["is_binary"] = not all(32 <= b < 127 or b in [9, 10, 13] for b in first_bytes[:50])
-    except Exception as e:
-        info["read_error"] = str(e)
-
-    return info
-
-
-# ─── 6. 모델 다운로드 로직 ─────────────────────────────────────
-def download_model_file(url: str, file_path: str, description: str) -> bool:
-    """URL에서 모델 파일을 다운로드합니다."""
-    try:
-        logger.info(f"📥 {description} 다운로드 시작: {url}")
-
-        # 디렉토리 생성
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-
-        # 파일 다운로드
-        response = requests.get(url, stream=True, timeout=300)  # 5분 타임아웃
-        response.raise_for_status()
-
-        total_size = int(response.headers.get('content-length', 0))
-        downloaded_size = 0
-
-        with open(file_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-                    downloaded_size += len(chunk)
-
-                    # 진행률 로그 (10MB마다)
-                    if downloaded_size % (10 * 1024 * 1024) == 0:
-                        progress = (downloaded_size / total_size * 100) if total_size > 0 else 0
-                        logger.info(f"📊 다운로드 진행률: {progress:.1f}% ({downloaded_size:,} bytes)")
-
-        logger.info(f"✅ {description} 다운로드 완료: {file_path} ({downloaded_size:,} bytes)")
-        return True
-
-    except Exception as e:
-        logger.error(f"❌ {description} 다운로드 실패: {e}")
-        return False
-
-
-def download_models_if_needed():
-    """필요한 경우 모델 파일들을 다운로드합니다."""
-    global _model_download_attempted
-
-    if _model_download_attempted:
-        return
-
-    _model_download_attempted = True
-
-    # 환경변수에서 다운로드 URL 확인
-    model_url = os.getenv('MODEL_DOWNLOAD_URL')
-    encoder_url = os.getenv('ENCODER_DOWNLOAD_URL')
-
-    # 모델 파일 다운로드
-    if not os.path.exists(MODEL_PATH) or is_git_lfs_pointer_file(MODEL_PATH):
-        if model_url:
-            download_model_file(model_url, MODEL_PATH, "Keras 모델")
-        else:
-            logger.warning("⚠️ MODEL_DOWNLOAD_URL 환경변수가 설정되지 않았습니다.")
-
-    # 인코더 파일 다운로드
-    if not os.path.exists(ENCODER_PATH) or is_git_lfs_pointer_file(ENCODER_PATH):
-        if encoder_url:
-            download_model_file(encoder_url, ENCODER_PATH, "Encoder")
-        else:
-            logger.warning("⚠️ ENCODER_DOWNLOAD_URL 환경변수가 설정되지 않았습니다.")
-
-
-# ─── 7. 모델 로딩 함수들 ─────────────────────────────────────
+# ─── 5. 모델 가용성 확인 (단순화) ─────────────────────────────────────
 def check_model_availability():
     """모델 파일들의 가용성을 확인합니다."""
     global _model_available
 
     logger.info("🔍 모델 파일 가용성 확인 중...")
 
-    # 먼저 파일 다운로드 시도
-    download_models_if_needed()
+    try:
+        # 파일 존재 및 크기 확인
+        model_exists = os.path.exists(MODEL_PATH)
+        encoder_exists = os.path.exists(ENCODER_PATH)
 
-    model_info = get_file_info(MODEL_PATH)
-    encoder_info = get_file_info(ENCODER_PATH)
+        model_valid = False
+        encoder_valid = False
 
-    logger.info(f"📄 모델 파일 정보: {model_info}")
-    logger.info(f"📄 인코더 파일 정보: {encoder_info}")
+        if model_exists:
+            model_size = os.path.getsize(MODEL_PATH)
+            # 실제 모델 파일 크기 체크 (100KB 이상)
+            model_valid = model_size > 100000
+            logger.info(f"📄 모델 파일: {model_size:,}B {'✅' if model_valid else '❌'}")
+        else:
+            logger.warning(f"⚠️ 모델 파일이 없습니다: {MODEL_PATH}")
 
-    # Git LFS 포인터 파일 감지
-    if model_info.get("is_lfs_pointer"):
-        logger.warning(f"⚠️ {MODEL_PATH}는 Git LFS 포인터 파일입니다.")
+        if encoder_exists:
+            encoder_size = os.path.getsize(ENCODER_PATH)
+            encoder_valid = encoder_size > 100  # 100B 이상
+            logger.info(f"📄 인코더 파일: {encoder_size:,}B {'✅' if encoder_valid else '❌'}")
+        else:
+            logger.warning(f"⚠️ 인코더 파일이 없습니다: {ENCODER_PATH}")
+
+        _model_available = model_valid and encoder_valid
+
+        logger.info(f"🤖 모델 가용성: {'✅ 사용 가능' if _model_available else '❌ 사용 불가'}")
+        return _model_available
+
+    except Exception as e:
+        logger.error(f"❌ 모델 가용성 확인 중 오류: {e}")
         _model_available = False
         return False
 
-    if encoder_info.get("is_lfs_pointer"):
-        logger.warning(f"⚠️ {ENCODER_PATH}는 Git LFS 포인터 파일입니다.")
-        _model_available = False
-        return False
 
-    # 실제 바이너리 파일이 있는지 확인
-    model_available = (
-            model_info.get("exists", False) and
-            not model_info.get("is_lfs_pointer", False) and
-            model_info.get("size", 0) > 1000000  # 최소 1MB 이상
-    )
-
-    encoder_available = (
-            encoder_info.get("exists", False) and
-            not encoder_info.get("is_lfs_pointer", False) and
-            encoder_info.get("size", 0) > 100  # 최소 100B 이상
-    )
-
-    _model_available = model_available and encoder_available
-
-    logger.info(f"🤖 모델 가용성: {'✅ 사용 가능' if _model_available else '❌ 사용 불가'}")
-
-    return _model_available
-
-
+# ─── 6. 모델 로딩 함수들 ─────────────────────────────────────
 def get_model():
     """Keras 감정 클러스터 모델을 로드합니다."""
     global _model
@@ -236,13 +127,9 @@ def get_model():
                 logger.warning(f"⚠️ 모델 파일이 없습니다: {MODEL_PATH}")
                 return None
 
-            if is_git_lfs_pointer_file(MODEL_PATH):
-                logger.warning(f"⚠️ 모델 파일이 Git LFS 포인터입니다: {MODEL_PATH}")
-                return None
-
             # 파일 크기 확인
             model_size = os.path.getsize(MODEL_PATH)
-            if model_size < 1000000:  # 1MB 미만
+            if model_size < 100000:  # 100KB 미만
                 logger.warning(f"⚠️ 모델 파일이 너무 작습니다: {model_size} bytes")
                 return None
 
@@ -292,10 +179,6 @@ def get_saved_encoder():
         try:
             if not os.path.exists(ENCODER_PATH):
                 logger.warning(f"⚠️ 인코더 파일이 없습니다: {ENCODER_PATH}")
-                return None
-
-            if is_git_lfs_pointer_file(ENCODER_PATH):
-                logger.warning(f"⚠️ 인코더 파일이 Git LFS 포인터입니다: {ENCODER_PATH}")
                 return None
 
             logger.info(f"📦 인코더 로딩 시도: {ENCODER_PATH}")
@@ -353,7 +236,7 @@ def get_fallback_encoder():
     return _fallback_encoder
 
 
-# ─── 8. AI 감정 클러스터 모델 추천 ─────────────────────────────────────
+# ─── 7. AI 감정 클러스터 모델 추천 ─────────────────────────────────────
 def predict_with_emotion_cluster_model(request_dict: dict) -> pd.DataFrame:
     """감정 클러스터 모델을 사용한 AI 추천"""
 
@@ -510,7 +393,7 @@ def predict_with_emotion_cluster_model(request_dict: dict) -> pd.DataFrame:
         raise e
 
 
-# ─── 9. 룰 기반 추천 시스템 ─────────────────────────────────────
+# ─── 8. 룰 기반 추천 시스템 ─────────────────────────────────────
 def rule_based_recommendation(request_data: dict, top_k: int = 10) -> List[dict]:
     """룰 기반 향수 추천 시스템 (AI 모델 대체)"""
     logger.info("🎯 룰 기반 추천 시스템 시작")
@@ -607,7 +490,7 @@ def rule_based_recommendation(request_data: dict, top_k: int = 10) -> List[dict]
             else:
                 candidates = df.sample(n=min(top_k, len(df)), random_state=42)
 
-        # 점수 계산 (더 정교하고 다양한 로직)
+        # 점수 계산
         candidates = candidates.copy()
         scores = []
 
@@ -615,9 +498,9 @@ def rule_based_recommendation(request_data: dict, top_k: int = 10) -> List[dict]
         popular_brands = ['Creed', 'Tom Ford', 'Chanel', 'Dior', 'Jo Malone', 'Diptyque']
 
         for idx, (_, row) in enumerate(candidates.iterrows()):
-            score = 0.3  # 더 낮은 기본 점수
+            score = 0.3  # 기본 점수
 
-            # 1. 조건 일치도 점수 (이미 필터링되었으므로 세밀한 차이)
+            # 1. 조건 일치도 점수
             brand_name = str(row.get('brand', ''))
             notes_text = str(row.get('notes', ''))
 
@@ -632,7 +515,7 @@ def rule_based_recommendation(request_data: dict, top_k: int = 10) -> List[dict]
             elif note_count >= 5:
                 score += 0.05
 
-            # 텍스트 매칭 정확도 (부분 매칭)
+            # 텍스트 매칭 정확도
             impression_match_count = 0
             if 'desired_impression' in row:
                 impressions = str(row['desired_impression']).lower().split(',')
@@ -643,19 +526,12 @@ def rule_based_recommendation(request_data: dict, top_k: int = 10) -> List[dict]
             if 'season_tags' in row:
                 season_tags = str(row['season_tags']).lower()
                 if season.lower() in season_tags:
-                    # 정확한 단어 매칭 시 더 높은 점수
-                    if f' {season.lower()} ' in f' {season_tags} ':
-                        score += 0.12
-                    else:
-                        score += 0.08
+                    score += 0.12 if f' {season.lower()} ' in f' {season_tags} ' else 0.08
 
             if 'time_tags' in row:
                 time_tags = str(row['time_tags']).lower()
                 if time.lower() in time_tags:
-                    if f' {time.lower()} ' in f' {time_tags} ':
-                        score += 0.12
-                    else:
-                        score += 0.08
+                    score += 0.12 if f' {time.lower()} ' in f' {time_tags} ' else 0.08
 
             # 활동 매칭
             if 'activity' in row and activity.lower() in str(row['activity']).lower():
@@ -666,13 +542,13 @@ def rule_based_recommendation(request_data: dict, top_k: int = 10) -> List[dict]
                 if weather.lower() in str(row['weather']).lower():
                     score += 0.06
             elif weather == 'any':
-                score += 0.03  # any weather는 작은 보너스
+                score += 0.03
 
-            # 다양성을 위한 위치 기반 점수 (앞쪽일수록 약간 높은 점수)
+            # 다양성을 위한 위치 기반 점수
             position_bonus = (len(candidates) - idx) / len(candidates) * 0.05
             score += position_bonus
 
-            # 랜덤 요소 (더 큰 범위로 다양성 확보)
+            # 랜덤 요소 (다양성 확보)
             score += random.uniform(-0.15, 0.15)
 
             # 점수 정규화 (0.2 ~ 0.95 범위)
@@ -701,6 +577,7 @@ def rule_based_recommendation(request_data: dict, top_k: int = 10) -> List[dict]
         return random_sample.to_dict('records')
 
 
+# ─── 9. 유틸리티 함수들 ─────────────────────────────────────
 def get_emotion_text(row):
     """감정 정보를 추출합니다."""
     # 1순위: desired_impression
@@ -796,8 +673,7 @@ logger.info("✅ 추천 시스템 초기화 완료")
             "- 학습 데이터: 2025-05-26 저장\n"
             "- Keras 버전: 2.13.1\n\n"
             "**✨ 특징:**\n"
-            "- Git LFS 포인터 파일 자동 감지\n"
-            "- 모델 파일 자동 다운로드 (환경변수 설정 시)\n"
+            "- 실제 모델 파일 크기 기반 유효성 검증\n"
             "- 견고한 에러 핸들링\n"
             "- 상세한 추천 이유 제공"
     )
@@ -887,25 +763,12 @@ def recommend_perfumes(request: RecommendRequest):
 def get_model_status():
     """모델 및 시스템 상태를 반환합니다."""
 
-    model_info = get_file_info(MODEL_PATH)
-    encoder_info = get_file_info(ENCODER_PATH)
+    # 파일 상태 확인
+    model_exists = os.path.exists(MODEL_PATH)
+    encoder_exists = os.path.exists(ENCODER_PATH)
 
-    # 환경변수 확인
-    env_info = {
-        "model_download_url": "설정됨" if os.getenv('MODEL_DOWNLOAD_URL') else "없음",
-        "encoder_download_url": "설정됨" if os.getenv('ENCODER_DOWNLOAD_URL') else "없음",
-        "render_env": "설정됨" if os.getenv('RENDER') else "없음",
-        "port": os.getenv('PORT', '기본값'),
-    }
-
-    # 시스템 정보
-    system_info = {
-        "python_version": sys.version,
-        "current_directory": os.getcwd(),
-        "router_location": BASE_DIR,
-        "dataset_loaded": len(df) > 0,
-        "dataset_size": len(df)
-    }
+    model_size = os.path.getsize(MODEL_PATH) if model_exists else 0
+    encoder_size = os.path.getsize(ENCODER_PATH) if encoder_exists else 0
 
     # 모델 구조 정보 (모델이 로드된 경우)
     model_structure = None
@@ -923,25 +786,33 @@ def get_model_status():
     return {
         "timestamp": datetime.now().isoformat(),
         "model_available": _model_available,
-        "download_attempted": _model_download_attempted,
         "files": {
             "keras_model": {
                 "path": MODEL_PATH,
-                "absolute_path": os.path.abspath(MODEL_PATH),
-                **model_info
+                "exists": model_exists,
+                "size_bytes": model_size,
+                "size_mb": round(model_size / (1024 * 1024), 2),
+                "valid": model_size > 100000
             },
             "encoder": {
                 "path": ENCODER_PATH,
-                "absolute_path": os.path.abspath(ENCODER_PATH),
-                **encoder_info
+                "exists": encoder_exists,
+                "size_bytes": encoder_size,
+                "size_kb": round(encoder_size / 1024, 2),
+                "valid": encoder_size > 100
             }
         },
         "model_structure": model_structure,
         "emotion_clusters": EMOTION_CLUSTER_MAP,
         "recommendation_method": "AI 감정 클러스터 모델" if _model_available else "룰 기반",
         "fallback_encoder_ready": _fallback_encoder is not None,
-        "environment_variables": env_info,
-        "system": system_info,
+        "system": {
+            "python_version": sys.version.split()[0],
+            "current_directory": os.getcwd(),
+            "router_location": BASE_DIR,
+            "dataset_loaded": len(df) > 0,
+            "dataset_size": len(df)
+        },
         "dataset_info": {
             "total_perfumes": len(df),
             "columns": list(df.columns),
@@ -953,105 +824,107 @@ def get_model_status():
 
 
 @router.get(
-    "/debug/filesystem",
-    summary="파일 시스템 디버그 (개발용)",
-    description="서버의 파일 시스템 상태를 상세히 확인합니다."
+    "/health",
+    summary="추천 시스템 헬스 체크",
+    description="추천 시스템의 전반적인 건강 상태를 확인합니다."
 )
-def debug_filesystem():
-    """서버의 파일 시스템 상태를 디버그합니다."""
+def health_check():
+    """추천 시스템 헬스 체크"""
 
-    debug_info = {
+    health_status = {
         "timestamp": datetime.now().isoformat(),
-        "current_directory": os.getcwd(),
-        "router_file_location": BASE_DIR,
-        "model_paths": {
-            "model_relative": MODEL_PATH,
-            "encoder_relative": ENCODER_PATH,
-            "model_absolute": os.path.abspath(MODEL_PATH),
-            "encoder_absolute": os.path.abspath(ENCODER_PATH)
-        }
+        "status": "healthy",
+        "checks": {}
     }
 
-    # 파일 존재 및 상세 정보
-    debug_info["files_detailed"] = {
-        "model": get_file_info(MODEL_PATH),
-        "encoder": get_file_info(ENCODER_PATH)
-    }
-
-    # models 디렉토리 내용
-    models_dir = os.path.dirname(MODEL_PATH)
-    if os.path.exists(models_dir):
-        debug_info["models_directory"] = {
-            "path": models_dir,
-            "exists": True,
-            "contents": []
-        }
-
-        try:
-            for item in os.listdir(models_dir):
-                item_path = os.path.join(models_dir, item)
-                item_info = {
-                    "name": item,
-                    "is_file": os.path.isfile(item_path),
-                    "size": os.path.getsize(item_path) if os.path.isfile(item_path) else 0
-                }
-
-                # 파일 상세 정보
-                if os.path.isfile(item_path):
-                    item_info.update(get_file_info(item_path))
-
-                debug_info["models_directory"]["contents"].append(item_info)
-        except Exception as e:
-            debug_info["models_directory"]["error"] = str(e)
-    else:
-        debug_info["models_directory"] = {
-            "path": models_dir,
-            "exists": False
-        }
-
-    # 프로젝트 구조 (제한적)
-    project_root = os.path.abspath(os.path.join(BASE_DIR, ".."))
-    debug_info["project_structure"] = {}
-
+    # 데이터셋 확인
     try:
-        for root, dirs, files in os.walk(project_root):
-            level = root.replace(project_root, '').count(os.sep)
-            if level < 2:  # 2레벨까지만
-                rel_path = os.path.relpath(root, project_root)
-                debug_info["project_structure"][rel_path] = {
-                    "dirs": dirs[:10],
-                    "files": [f for f in files if not f.startswith('.')][:15]
-                }
+        health_status["checks"]["dataset"] = {
+            "status": "ok" if len(df) > 0 else "error",
+            "perfume_count": len(df),
+            "columns_available": len(df.columns)
+        }
     except Exception as e:
-        debug_info["project_structure_error"] = str(e)
+        health_status["checks"]["dataset"] = {
+            "status": "error",
+            "error": str(e)
+        }
 
-    # Git LFS 정보 (가능한 경우)
+    # 모델 파일 확인
     try:
-        lfs_info = subprocess.run(['git', 'lfs', 'ls-files'],
-                                  capture_output=True, text=True, cwd=project_root)
-        if lfs_info.returncode == 0:
-            debug_info["git_lfs_files"] = lfs_info.stdout.strip().split('\n')
+        model_exists = os.path.exists(MODEL_PATH)
+        encoder_exists = os.path.exists(ENCODER_PATH)
+        model_size = os.path.getsize(MODEL_PATH) if model_exists else 0
+        encoder_size = os.path.getsize(ENCODER_PATH) if encoder_exists else 0
+
+        model_valid = model_exists and model_size > 100000
+        encoder_valid = encoder_exists and encoder_size > 100
+
+        health_status["checks"]["model_files"] = {
+            "status": "ok" if model_valid and encoder_valid else "warning",
+            "model_available": model_valid,
+            "encoder_available": encoder_valid,
+            "model_size_mb": round(model_size / (1024 * 1024), 2),
+            "encoder_size_kb": round(encoder_size / 1024, 2),
+            "fallback_ready": _fallback_encoder is not None
+        }
+    except Exception as e:
+        health_status["checks"]["model_files"] = {
+            "status": "error",
+            "error": str(e)
+        }
+
+    # 추천 시스템 테스트
+    try:
+        test_request = {
+            "gender": "women",
+            "season": "spring",
+            "time": "day",
+            "impression": "fresh",
+            "activity": "casual",
+            "weather": "any"
+        }
+
+        start_time = datetime.now()
+        if _model_available:
+            try:
+                test_results = predict_with_emotion_cluster_model(test_request)
+                method = "AI 감정 클러스터 모델"
+            except:
+                rule_results = rule_based_recommendation(test_request, 3)
+                test_results = pd.DataFrame(rule_results)
+                method = "룰 기반 (AI 실패)"
         else:
-            debug_info["git_lfs_error"] = lfs_info.stderr
+            rule_results = rule_based_recommendation(test_request, 3)
+            test_results = pd.DataFrame(rule_results)
+            method = "룰 기반 (모델 없음)"
+
+        processing_time = (datetime.now() - start_time).total_seconds()
+
+        health_status["checks"]["recommendation_system"] = {
+            "status": "ok" if len(test_results) > 0 else "error",
+            "test_result_count": len(test_results),
+            "processing_time_seconds": round(processing_time, 3),
+            "method": method
+        }
     except Exception as e:
-        debug_info["git_lfs_not_available"] = str(e)
+        health_status["checks"]["recommendation_system"] = {
+            "status": "error",
+            "error": str(e)
+        }
 
-    # 환경변수
-    debug_info["environment"] = {
-        "RENDER": os.getenv("RENDER"),
-        "PORT": os.getenv("PORT"),
-        "PWD": os.getenv("PWD"),
-        "HOME": os.getenv("HOME"),
-        "PYTHON_VERSION": sys.version,
-        "MODEL_DOWNLOAD_URL": "설정됨" if os.getenv('MODEL_DOWNLOAD_URL') else "없음",
-        "ENCODER_DOWNLOAD_URL": "설정됨" if os.getenv('ENCODER_DOWNLOAD_URL') else "없음"
-    }
+    # 전체 상태 결정
+    all_checks = health_status["checks"].values()
+    if any(check.get("status") == "error" for check in all_checks):
+        health_status["status"] = "unhealthy"
+    elif any(check.get("status") == "warning" for check in all_checks):
+        health_status["status"] = "degraded"
 
-    return debug_info
+    return health_status
 
 
 @router.post(
-    "/debug/test-recommendation",
+    "/test-recommendation",
     summary="추천 시스템 테스트 (개발용)",
     description="다양한 조건으로 추천 시스템을 테스트합니다."
 )
@@ -1123,12 +996,12 @@ def test_recommendation_system():
                 "success": True,
                 "method": method,
                 "result_count": len(result_data),
-                "processing_time_seconds": processing_time,
+                "processing_time_seconds": round(processing_time, 3),
                 "sample_results": [
                     {
                         "name": r.get("name", ""),
                         "brand": r.get("brand", ""),
-                        "score": r.get("score", 0)
+                        "score": round(r.get("score", 0), 3)
                     } for r in result_data
                 ]
             })
@@ -1152,99 +1025,8 @@ def test_recommendation_system():
         "summary": {
             "total_tests": len(test_cases),
             "successful_tests": sum(1 for r in results if r["success"]),
-            "average_processing_time": sum(r.get("processing_time_seconds", 0) for r in results) / len(results)
+            "average_processing_time": round(
+                sum(r.get("processing_time_seconds", 0) for r in results) / len(results), 3
+            )
         }
     }
-
-
-@router.get(
-    "/health",
-    summary="추천 시스템 헬스 체크",
-    description="추천 시스템의 전반적인 건강 상태를 확인합니다."
-)
-def health_check():
-    """추천 시스템 헬스 체크"""
-
-    health_status = {
-        "timestamp": datetime.now().isoformat(),
-        "status": "healthy",
-        "checks": {}
-    }
-
-    # 데이터셋 확인
-    try:
-        health_status["checks"]["dataset"] = {
-            "status": "ok" if len(df) > 0 else "error",
-            "perfume_count": len(df),
-            "columns_available": len(df.columns)
-        }
-    except Exception as e:
-        health_status["checks"]["dataset"] = {
-            "status": "error",
-            "error": str(e)
-        }
-
-    # 모델 파일 확인
-    try:
-        model_exists = os.path.exists(MODEL_PATH) and not is_git_lfs_pointer_file(MODEL_PATH)
-        encoder_exists = os.path.exists(ENCODER_PATH) and not is_git_lfs_pointer_file(ENCODER_PATH)
-
-        health_status["checks"]["model_files"] = {
-            "status": "ok" if model_exists and encoder_exists else "warning",
-            "model_available": model_exists,
-            "encoder_available": encoder_exists,
-            "fallback_ready": _fallback_encoder is not None
-        }
-    except Exception as e:
-        health_status["checks"]["model_files"] = {
-            "status": "error",
-            "error": str(e)
-        }
-
-    # 추천 시스템 테스트
-    try:
-        test_request = {
-            "gender": "women",
-            "season": "spring",
-            "time": "day",
-            "impression": "fresh",
-            "activity": "casual",
-            "weather": "any"
-        }
-
-        start_time = datetime.now()
-        if _model_available:
-            try:
-                test_results = predict_with_emotion_cluster_model(test_request)
-                method = "AI 감정 클러스터 모델"
-            except:
-                rule_results = rule_based_recommendation(test_request, 3)
-                test_results = pd.DataFrame(rule_results)
-                method = "룰 기반 (AI 실패)"
-        else:
-            rule_results = rule_based_recommendation(test_request, 3)
-            test_results = pd.DataFrame(rule_results)
-            method = "룰 기반 (모델 없음)"
-
-        processing_time = (datetime.now() - start_time).total_seconds()
-
-        health_status["checks"]["recommendation_system"] = {
-            "status": "ok" if len(test_results) > 0 else "error",
-            "test_result_count": len(test_results),
-            "processing_time_seconds": processing_time,
-            "method": method
-        }
-    except Exception as e:
-        health_status["checks"]["recommendation_system"] = {
-            "status": "error",
-            "error": str(e)
-        }
-
-    # 전체 상태 결정
-    all_checks = health_status["checks"].values()
-    if any(check.get("status") == "error" for check in all_checks):
-        health_status["status"] = "unhealthy"
-    elif any(check.get("status") == "warning" for check in all_checks):
-        health_status["status"] = "degraded"
-
-    return health_status
