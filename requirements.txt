@@ -4,7 +4,7 @@
 numpy==2.0.2
 pandas==2.2.2
 tensorflow==2.18.0
-scikit-learn==1.5.2
+scikit-learn==1.6.1
 h5py==3.12.1
 
 # FastAPI 및 웹 서버 (최신 안정 버전)
