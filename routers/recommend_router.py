@@ -11,6 +11,16 @@ from typing import List, Literal, Optional, Dict, Any
 import pandas as pd
 from sklearn.preprocessing import OneHotEncoder
 
+# ✅ schemas/recommend.py에서 스키마 임포트
+from schemas.recommend import (
+    RecommendRequest,
+    RecommendedPerfume,
+    RecommendResponse,
+    SUPPORTED_CATEGORIES,
+    validate_request_categories,
+    map_single_to_combined_impression
+)
+
 # ─── 로거 설정 ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -74,17 +84,17 @@ EMOTION_CLUSTER_MAP = {
     5: "활기찬, 에너지"
 }
 
-# ✅ 수정된 카테고리 매핑 - API와 모델 간 호환성 보장
+# ✅ encoder.pkl과 호환되는 카테고리 매핑
 API_TO_MODEL_MAPPING = {
     "gender": {
-        "women": "women",
         "men": "men",
-        "unisex": "unisex"
+        "unisex": "unisex",
+        "women": "women"
     },
     "season_tags": {
+        "fall": "fall",
         "spring": "spring",
         "summer": "summer",
-        "fall": "fall",
         "winter": "winter"
     },
     "time_tags": {
@@ -92,25 +102,24 @@ API_TO_MODEL_MAPPING = {
         "night": "night"
     },
     "desired_impression": {
-        "confident": "confident",
-        "elegant": "elegant",
-        "pure": "pure",
-        "friendly": "friendly",
-        "mysterious": "mysterious",
-        "fresh": "fresh"
+        "confident, fresh": "confident, fresh",
+        "confident, mysterious": "confident, mysterious",
+        "elegant, friendly": "elegant, friendly",
+        "pure, friendly": "pure, friendly"
     },
     "activity": {
         "casual": "casual",
-        "work": "work",
-        "date": "date"
+        "date": "date",
+        "work": "work"
     },
     "weather": {
-        "hot": "hot",
+        "any": "any",
         "cold": "cold",
-        "rainy": "rainy",
-        "any": "any"
+        "hot": "hot",
+        "rainy": "rainy"
     }
 }
+
 
 # ─── 5. 모델 가용성 확인 (31KB 모델에 맞게 수정) ─────────────────────────────────────
 def check_model_availability():
@@ -293,64 +302,50 @@ def get_saved_encoder():
 
 
 def get_fallback_encoder():
-    """✅ 수정된 Fallback OneHotEncoder를 생성합니다."""
+    """✅ encoder.pkl과 호환되는 Fallback OrdinalEncoder를 생성합니다."""
     global _fallback_encoder
 
     if _fallback_encoder is None:
         try:
-            logger.info("🔧 Fallback OneHotEncoder 생성 중...")
+            logger.info("🔧 Fallback OrdinalEncoder 생성 중...")
 
-            # ✅ API 스키마와 일치하는 카테고리 정의
+            # ✅ encoder.pkl과 동일한 카테고리 정의
+            from sklearn.preprocessing import OrdinalEncoder
+
             CATEGORIES = [
-                ["women", "men", "unisex"],  # gender
-                ["spring", "summer", "fall", "winter"],  # season_tags
+                ["men", "unisex", "women"],  # gender
+                ["fall", "spring", "summer", "winter"],  # season_tags
                 ["day", "night"],  # time_tags
-                ["confident", "elegant", "pure", "friendly", "mysterious", "fresh"],  # desired_impression
-                ["casual", "work", "date"],  # activity
-                ["hot", "cold", "rainy", "any"]  # weather
+                ["confident, fresh", "confident, mysterious", "elegant, friendly", "pure, friendly"],
+                # desired_impression
+                ["casual", "date", "work"],  # activity
+                ["any", "cold", "hot", "rainy"]  # weather
             ]
 
-            # ✅ scikit-learn 1.6+ 호환성: sparse_output 사용
-            try:
-                _fallback_encoder = OneHotEncoder(
-                    categories=CATEGORIES,
-                    handle_unknown="ignore",
-                    sparse_output=False  # ✅ 수정: sparse=False → sparse_output=False
-                )
-                logger.info("✅ OneHotEncoder 생성 성공 (sparse_output 사용)")
-            except TypeError:
-                # 이전 버전 호환성
-                _fallback_encoder = OneHotEncoder(
-                    categories=CATEGORIES,
-                    handle_unknown="ignore",
-                    sparse=False  # 이전 버전 지원
-                )
-                logger.info("✅ OneHotEncoder 생성 성공 (sparse 사용)")
+            # ✅ OrdinalEncoder 생성 (encoder.pkl과 동일한 타입)
+            _fallback_encoder = OrdinalEncoder(
+                categories=CATEGORIES,
+                handle_unknown="error"
+            )
 
-            # 더미 데이터로 fit (API 스키마와 완전 일치)
+            # 더미 데이터로 fit (encoder.pkl과 완전 일치)
             dummy_data = [
-                ["women", "spring", "day", "confident", "casual", "hot"],
-                ["men", "summer", "night", "elegant", "work", "cold"],
-                ["unisex", "fall", "day", "pure", "date", "rainy"],
-                ["women", "winter", "night", "friendly", "casual", "any"],
-                ["men", "spring", "day", "mysterious", "work", "hot"],
-                ["unisex", "summer", "night", "fresh", "date", "cold"]
+                ["men", "fall", "day", "confident, fresh", "casual", "any"],
+                ["unisex", "spring", "night", "confident, mysterious", "date", "cold"],
+                ["women", "summer", "day", "elegant, friendly", "work", "hot"],
+                ["men", "winter", "night", "pure, friendly", "casual", "rainy"]
             ]
 
             _fallback_encoder.fit(dummy_data)
-            logger.info("✅ Fallback OneHotEncoder 생성 및 훈련 완료")
+            logger.info("✅ Fallback OrdinalEncoder 생성 및 훈련 완료")
 
             # ✅ 인코더 검증 테스트
-            test_input = ["women", "spring", "day", "confident", "casual", "hot"]
+            test_input = ["women", "spring", "day", "confident, fresh", "casual", "hot"]
             test_encoded = _fallback_encoder.transform([test_input])
             logger.info(f"🧪 Fallback 인코더 테스트 성공: 입력 6개 → 출력 {test_encoded.shape[1]}개")
 
         except Exception as e:
             logger.error(f"❌ Fallback encoder 생성 실패: {e}")
-            # ✅ 추가 디버깅 정보
-            import sklearn
-            logger.error(f"📦 scikit-learn 버전: {sklearn.__version__}")
-            logger.error(f"📦 OneHotEncoder 파라미터 확인 필요")
             return None
 
     return _fallback_encoder
@@ -754,16 +749,7 @@ def get_recommendation_reason(score: float, method: str) -> str:
             return f"🎲 새로운 스타일 제안 (일치도 {score:.1%}) - 도전해보세요!"
 
 
-# ─── 10. 스키마 정의 ────────────────────────────────────────────────
-class RecommendRequest(BaseModel):
-    gender: Literal["women", "men", "unisex"]
-    season_tags: Literal["spring", "summer", "fall", "winter"]
-    time_tags: Literal["day", "night"]
-    desired_impression: Literal["confident", "elegant", "pure", "friendly", "mysterious", "fresh"]
-    activity: Literal["casual", "work", "date"]
-    weather: Literal["hot", "cold", "rainy", "any"]
-
-
+# ─── 10. 레거시 스키마 정의 (하위 호환성) ────────────────────────────────────────────────
 class PerfumeRecommendItem(BaseModel):
     name: str
     brand: str
@@ -793,35 +779,38 @@ logger.info("✅ 추천 시스템 초기화 완료")
 @router.post(
     "/recommend",
     response_model=List[PerfumeRecommendItem],
-    summary="향수 추천 (AI 감정 클러스터 모델 + 룰 기반 Fallback)",
+    summary="향수 추천 (encoder.pkl 호환 버전)",
     description=(
             "사용자의 선호도를 기반으로 향수를 추천합니다.\n\n"
             "**🤖 추천 방식:**\n"
             "1. **AI 감정 클러스터 모델**: 6개 입력 → 6개 감정 클러스터 분류 → 해당 클러스터 향수 추천\n"
             "2. **룰 기반 Fallback**: 조건부 필터링 + 스코어링 (모델이 없거나 실패한 경우)\n"
             "3. **다양성 보장**: 브랜드별 균형 잡힌 추천\n\n"
-            "**📋 입력 파라미터:**\n"
-            "- `gender`: 성별 (women/men/unisex)\n"
-            "- `season_tags`: 계절 (spring/summer/fall/winter)\n"
+            "**📋 입력 파라미터 (encoder.pkl 호환):**\n"
+            "- `gender`: 성별 (men/unisex/women)\n"
+            "- `season_tags`: 계절 (fall/spring/summer/winter)\n"
             "- `time_tags`: 시간대 (day/night)\n"
-            "- `desired_impression`: 원하는 인상 (confident/elegant/pure/friendly/mysterious/fresh)\n"
-            "- `activity`: 활동 (casual/work/date)\n"
-            "- `weather`: 날씨 (hot/cold/rainy/any)\n\n"
-            "**🧠 AI 모델 세부사항:**\n"
-            "- 모델 구조: Sequential (Input 6 → Dense 64 → Dense 6)\n"
-            "- 출력: 6개 감정 클러스터 확률 (softmax)\n"
-            "- Keras 버전: 3.8.0\n"
-            "- 모델 크기: ~31KB\n\n"
+            "- `desired_impression`: 원하는 인상 조합 (confident, fresh/confident, mysterious/elegant, friendly/pure, friendly)\n"
+            "- `activity`: 활동 (casual/date/work)\n"
+            "- `weather`: 날씨 (any/cold/hot/rainy)\n\n"
             "**✨ 특징:**\n"
-            "- 실제 모델 파일 크기 기반 유효성 검증\n"
+            "- encoder.pkl과 완전 호환\n"
+            "- OrdinalEncoder 사용으로 6개 특성 입력\n"
             "- 견고한 에러 핸들링\n"
-            "- 상세한 추천 이유 제공\n"
-            "- scikit-learn 1.6+ 호환성 지원"
+            "- 상세한 추천 이유 제공"
     )
 )
 def recommend_perfumes(request: RecommendRequest):
     request_start_time = datetime.now()
     logger.info(f"🎯 향수 추천 요청 시작: {request}")
+
+    # ✅ 입력 검증
+    if not validate_request_categories(request):
+        logger.error("❌ 잘못된 카테고리 값 입력")
+        raise HTTPException(
+            status_code=400,
+            detail=f"지원되지 않는 카테고리 값입니다. 지원되는 값: {SUPPORTED_CATEGORIES}"
+        )
 
     # 요청 데이터를 딕셔너리로 변환
     request_dict = request.dict()
@@ -985,6 +974,7 @@ def get_model_status():
         "emotion_clusters": EMOTION_CLUSTER_MAP,
         "recommendation_method": "AI 감정 클러스터 모델" if _model_available else "룰 기반",
         "fallback_encoder_ready": _fallback_encoder is not None,
+        "supported_categories": SUPPORTED_CATEGORIES,  # ✅ encoder.pkl 호환 카테고리
         "system": {
             "python_version": sys.version.split()[0],
             "sklearn_version": sklearn_version,  # ✅ 추가
@@ -1001,9 +991,10 @@ def get_model_status():
                 df['emotion_cluster'].value_counts()) if 'emotion_cluster' in df.columns else None
         },
         "compatibility": {
-            "api_schema_categories": API_TO_MODEL_MAPPING,
+            "encoder_type": "OrdinalEncoder (6 output features)",
+            "api_schema_categories": SUPPORTED_CATEGORIES,
             "encoder_fallback_available": _fallback_encoder is not None,
-            "sklearn_sparse_parameter": "sparse_output (1.6+) / sparse (1.5-)"
+            "sklearn_compatibility": "OrdinalEncoder 사용 (encoder.pkl 호환)"
         }
     }
 
@@ -1066,6 +1057,8 @@ def health_check():
         health_status["checks"]["encoder_compatibility"] = {
             "status": "ok" if fallback_encoder is not None else "error",
             "fallback_encoder_available": fallback_encoder is not None,
+            "encoder_type": "OrdinalEncoder",
+            "output_features": 6,
             "sklearn_compatible": True  # fallback 생성 성공하면 호환됨
         }
     except Exception as e:
@@ -1081,7 +1074,7 @@ def health_check():
             "gender": "women",
             "season_tags": "spring",
             "time_tags": "day",
-            "desired_impression": "fresh",
+            "desired_impression": "confident, fresh",
             "activity": "casual",
             "weather": "any"
         }
@@ -1139,7 +1132,7 @@ def test_recommendation_system():
                 "gender": "women",
                 "season_tags": "spring",
                 "time_tags": "day",
-                "desired_impression": "fresh",
+                "desired_impression": "confident, fresh",
                 "activity": "casual",
                 "weather": "any"
             }
@@ -1150,7 +1143,7 @@ def test_recommendation_system():
                 "gender": "men",
                 "season_tags": "winter",
                 "time_tags": "night",
-                "desired_impression": "confident",
+                "desired_impression": "confident, mysterious",
                 "activity": "date",
                 "weather": "cold"
             }
@@ -1161,7 +1154,7 @@ def test_recommendation_system():
                 "gender": "unisex",
                 "season_tags": "summer",
                 "time_tags": "day",
-                "desired_impression": "mysterious",
+                "desired_impression": "elegant, friendly",
                 "activity": "work",
                 "weather": "hot"
             }
@@ -1231,6 +1224,7 @@ def test_recommendation_system():
         "fallback_encoder_available": _fallback_encoder is not None,
         "dataset_size": len(df),
         "emotion_clusters": EMOTION_CLUSTER_MAP,
+        "supported_categories": SUPPORTED_CATEGORIES,  # ✅ encoder.pkl 호환 카테고리
         "sklearn_version": sklearn_version,  # ✅ 추가
         "test_results": results,
         "summary": {
