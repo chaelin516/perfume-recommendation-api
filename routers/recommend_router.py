@@ -55,7 +55,7 @@ except Exception as e:
 
 # ─── 2. 모델 파일 경로 설정 ─────────────────────────────────────
 BASE_DIR = os.path.dirname(__file__)
-MODEL_PATH = os.path.join(BASE_DIR, "../models/final_model_perfume.keras")
+MODEL_PATH = os.path.join(BASE_DIR, "../models/final_model.keras")
 ENCODER_PATH = os.path.join(BASE_DIR, "../models/encoder.pkl")
 
 # ─── 3. 전역 변수 및 상태 관리 ─────────────────────────────────────
