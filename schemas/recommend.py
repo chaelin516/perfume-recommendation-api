@@ -1,5 +1,7 @@
-from pydantic import BaseModel, Field
-from typing import Literal, List, Optional
+# schemas/recommend.py 전체 수정된 버전
+
+from pydantic import BaseModel, Field, validator
+from typing import Literal, List, Optional, Dict, Any
 
 
 # ✅ encoder.pkl과 호환되는 스키마 정의
@@ -78,6 +80,28 @@ class RecommendedPerfume(BaseModel):
     score: Optional[float] = Field(None, description="추천 점수 (0.0-1.0)", ge=0.0, le=1.0)
     method: Optional[str] = Field(None, description="추천 방법 (AI/룰기반)")
     emotion_cluster: Optional[int] = Field(None, description="감정 클러스터 ID (0-5)")
+
+
+# 🆕 2차 추천 결과 아이템 - image_url 추가
+class SecondRecommendItem(BaseModel):
+    """2차 추천 결과 아이템 - image_url 포함"""
+
+    name: str = Field(..., description="향수 이름")
+    brand: str = Field(..., description="브랜드명")
+    final_score: float = Field(..., description="최종 추천 점수 (0.0-1.0)", ge=0.0, le=1.0)
+    emotion_cluster: int = Field(..., description="감정 클러스터 ID (0-5)", ge=0, le=5)
+    image_url: str = Field(..., description="향수 이미지 URL")  # 🆕 추가
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "name": "Light Blue",
+                "brand": "Dolce & Gabbana",
+                "final_score": 0.913,
+                "emotion_cluster": 2,
+                "image_url": "https://example.com/light_blue.jpg"
+            }
+        }
 
 
 # 🆕 클러스터 기반 추천 응답 스키마

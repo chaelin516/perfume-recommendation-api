@@ -3,5 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="Python 3.11 (perfume-recommendation-api)" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.11 (perfume-recommendation-api)" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.12 (향수 앱 개발)" project-jdk-type="Python SDK" />
 </project>
