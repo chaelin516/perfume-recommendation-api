@@ -1,5 +1,5 @@
 # routers/recommend_2nd_router.py
-# 🆕 2차 향수 추천 API - 사용자 노트 선호도 기반 정밀 추천 (수정된 버전)
+# 🆕 2차 향수 추천 API - 프론트엔드 데이터 매핑 수정 버전
 
 import os
 import pickle
@@ -51,16 +51,134 @@ except Exception as e:
     raise RuntimeError(f"perfume_final_dataset.csv 로드 중 오류: {e}")
 
 
-# ─── 2. 스키마 정의 ─────────────────────────────────────────────────────────────
-class UserPreferences(BaseModel):
-    """1차 추천을 위한 사용자 선호도 (AI 모델 입력)"""
+# ─── 2. 🆕 프론트엔드 데이터 매핑 함수 ─────────────────────────────────────────────────
+def normalize_frontend_data(user_preferences: dict) -> dict:
+    """
+    프론트엔드에서 오는 데이터를 백엔드 AI 모델 형식에 맞게 변환
+    """
+    logger.info(f"🔄 프론트엔드 데이터 정규화 시작: {user_preferences}")
 
-    gender: str = Field(..., description="성별", example="women")
-    season_tags: str = Field(..., description="계절", example="spring")
-    time_tags: str = Field(..., description="시간", example="day")
-    desired_impression: str = Field(..., description="원하는 인상", example="confident, fresh")
-    activity: str = Field(..., description="활동", example="casual")
-    weather: str = Field(..., description="날씨", example="hot")
+    # 1. 소문자 변환 매핑
+    normalized = {}
+
+    # gender 매핑
+    gender = str(user_preferences.get('gender', '')).lower()
+    if gender in ['unisex', 'men', 'women']:
+        normalized['gender'] = gender
+    else:
+        # 기본값 또는 추론
+        normalized['gender'] = 'unisex'
+        logger.warning(f"⚠️ 알 수 없는 gender '{gender}', 기본값 'unisex' 사용")
+
+    # season_tags 매핑
+    season = str(user_preferences.get('season_tags', '')).lower()
+    if season in ['spring', 'summer', 'fall', 'winter']:
+        normalized['season_tags'] = season
+    else:
+        normalized['season_tags'] = 'summer'
+        logger.warning(f"⚠️ 알 수 없는 season '{season}', 기본값 'summer' 사용")
+
+    # time_tags 매핑
+    time = str(user_preferences.get('time_tags', '')).lower()
+    if time in ['day', 'night']:
+        normalized['time_tags'] = time
+    else:
+        normalized['time_tags'] = 'day'
+        logger.warning(f"⚠️ 알 수 없는 time '{time}', 기본값 'day' 사용")
+
+    # activity 매핑
+    activity = str(user_preferences.get('activity', '')).lower()
+    if activity in ['casual', 'date', 'work']:
+        normalized['activity'] = activity
+    else:
+        normalized['activity'] = 'casual'
+        logger.warning(f"⚠️ 알 수 없는 activity '{activity}', 기본값 'casual' 사용")
+
+    # weather 매핑
+    weather = str(user_preferences.get('weather', '')).lower()
+    if weather in ['any', 'cold', 'hot', 'rainy']:
+        normalized['weather'] = weather
+    else:
+        normalized['weather'] = 'any'
+        logger.warning(f"⚠️ 알 수 없는 weather '{weather}', 기본값 'any' 사용")
+
+    # 2. 🚨 desired_impression 특별 처리 (가장 중요!)
+    impression = str(user_preferences.get('desired_impression', '')).lower()
+
+    # 지원되는 조합값들
+    supported_impressions = [
+        'confident, fresh',
+        'confident, mysterious',
+        'elegant, friendly',
+        'pure, friendly'
+    ]
+
+    # 단일 값을 조합 값으로 매핑
+    impression_mapping = {
+        'pure': 'pure, friendly',
+        'confident': 'confident, fresh',
+        'fresh': 'confident, fresh',
+        'mysterious': 'confident, mysterious',
+        'elegant': 'elegant, friendly',
+        'friendly': 'elegant, friendly'
+    }
+
+    if impression in supported_impressions:
+        # 이미 올바른 조합 형태
+        normalized['desired_impression'] = impression
+    elif impression in impression_mapping:
+        # 단일 값을 조합 값으로 변환
+        normalized['desired_impression'] = impression_mapping[impression]
+        logger.info(f"🔄 desired_impression 매핑: '{impression}' → '{normalized['desired_impression']}'")
+    else:
+        # 기본값 사용
+        normalized['desired_impression'] = 'confident, fresh'
+        logger.warning(f"⚠️ 알 수 없는 desired_impression '{impression}', 기본값 'confident, fresh' 사용")
+
+    logger.info(f"✅ 정규화 완료: {normalized}")
+
+    return normalized
+
+
+def validate_ai_model_input(user_preferences: dict) -> bool:
+    """AI 모델 입력 데이터 유효성 검사"""
+    required_fields = ['gender', 'season_tags', 'time_tags', 'desired_impression', 'activity', 'weather']
+
+    for field in required_fields:
+        if field not in user_preferences:
+            logger.error(f"❌ 필수 필드 누락: {field}")
+            return False
+
+    # 각 필드의 값 검증
+    valid_values = {
+        'gender': ['men', 'unisex', 'women'],
+        'season_tags': ['fall', 'spring', 'summer', 'winter'],
+        'time_tags': ['day', 'night'],
+        'desired_impression': ['confident, fresh', 'confident, mysterious', 'elegant, friendly', 'pure, friendly'],
+        'activity': ['casual', 'date', 'work'],
+        'weather': ['any', 'cold', 'hot', 'rainy']
+    }
+
+    for field, valid_list in valid_values.items():
+        value = user_preferences.get(field)
+        if value not in valid_list:
+            logger.error(f"❌ 잘못된 값: {field}='{value}', 유효한 값: {valid_list}")
+            return False
+
+    logger.info("✅ AI 모델 입력 데이터 유효성 검사 통과")
+    return True
+
+
+# ─── 3. 스키마 정의 ─────────────────────────────────────────────────────────────
+class UserPreferences(BaseModel):
+    """1차 추천을 위한 사용자 선호도 (AI 모델 입력) - 대소문자 관계없이 허용"""
+
+    gender: str = Field(..., description="성별")
+    season_tags: str = Field(..., description="계절")
+    time_tags: str = Field(..., description="시간")
+    desired_impression: str = Field(..., description="원하는 인상")
+    activity: str = Field(..., description="활동")
+    weather: str = Field(..., description="날씨")
 
 
 class SecondRecommendRequest(BaseModel):
@@ -108,38 +226,6 @@ class SecondRecommendRequest(BaseModel):
                 raise ValueError(f"노트 '{note}'의 점수는 0-5 사이의 정수여야 합니다.")
         return v
 
-    @validator('emotion_proba')
-    def validate_emotion_proba(cls, v):
-        if v is None:
-            return v
-
-        if len(v) != 6:
-            raise ValueError("emotion_proba는 정확히 6개의 확률값을 가져야 합니다.")
-
-        total = sum(v)
-        if not (0.95 <= total <= 1.05):
-            raise ValueError(f"emotion_proba의 합은 1.0에 가까워야 합니다. 현재: {total}")
-
-        for prob in v:
-            if not (0.0 <= prob <= 1.0):
-                raise ValueError("각 확률값은 0.0-1.0 사이여야 합니다.")
-
-        return v
-
-    @validator('selected_idx')
-    def validate_selected_idx(cls, v):
-        if v is None:
-            return v
-
-        if len(set(v)) != len(v):
-            raise ValueError("selected_idx에 중복된 인덱스가 있습니다.")
-
-        for idx in v:
-            if idx < 0:
-                raise ValueError("인덱스는 0 이상이어야 합니다.")
-
-        return v
-
 
 class SecondRecommendItem(BaseModel):
     """2차 추천 결과 아이템"""
@@ -153,7 +239,7 @@ class SecondRecommendItem(BaseModel):
     reason: str = Field("", description="추천 이유")
 
 
-# ─── 3. 노트 분석 유틸리티 함수들 ─────────────────────────────────────────────────
+# ─── 4. 노트 분석 유틸리티 함수들 ─────────────────────────────────────────────────
 def parse_notes_from_string(notes_str: str) -> List[str]:
     """노트 문자열을 파싱하여 개별 노트 리스트로 변환"""
     if not notes_str or pd.isna(notes_str):
@@ -305,14 +391,23 @@ def get_recommendation_reason(final_score: float, note_match_score: float, emoti
         return f"🔍 {cluster_desc} 계열의 색다른 매력을 가진 향수입니다."
 
 
-# ─── 4. AI 모델 호출 함수 ─────────────────────────────────────────────────────────
+# ─── 5. AI 모델 호출 함수 ─────────────────────────────────────────────────────────
 def call_ai_model_for_first_recommendation(user_preferences: dict) -> Dict:
     """AI 모델을 호출하여 1차 추천 수행"""
     try:
         logger.info("🤖 AI 모델 1차 추천 호출 시작")
 
+        # 🚨 데이터 정규화 적용
+        normalized_preferences = normalize_frontend_data(user_preferences)
+
+        # 🚨 유효성 검사
+        if not validate_ai_model_input(normalized_preferences):
+            raise ValueError("AI 모델 입력 데이터 유효성 검사 실패")
+
+        logger.info(f"🔄 정규화된 선호도로 AI 모델 호출: {normalized_preferences}")
+
         # predict_cluster_recommendation 함수 호출
-        result = predict_cluster_recommendation(user_preferences)
+        result = predict_cluster_recommendation(normalized_preferences)
 
         # 결과 형태 변환
         return {
@@ -327,7 +422,7 @@ def call_ai_model_for_first_recommendation(user_preferences: dict) -> Dict:
         raise e
 
 
-# ─── 5. 메인 추천 함수 ─────────────────────────────────────────────────────────
+# ─── 6. 메인 추천 함수 ─────────────────────────────────────────────────────────
 def process_second_recommendation_with_ai(
         user_preferences: dict,
         user_note_scores: Dict[str, int],
@@ -341,14 +436,14 @@ def process_second_recommendation_with_ai(
 
     # 1. emotion_proba 또는 selected_idx가 없으면 AI 모델 호출
     if emotion_proba is None or selected_idx is None:
-        logger.info("🤖 AI 모델로 1차 추천 수행")
+        logger.info("🤖 AI 모델로 1차 추천 수행 (emotion_proba 또는 selected_idx 없음)")
 
         try:
             ai_result = call_ai_model_for_first_recommendation(user_preferences)
 
             if emotion_proba is None:
                 emotion_proba = ai_result["emotion_proba"]
-                logger.info(f"✅ AI 모델에서 감정 확률 획득: 클러스터 {ai_result['cluster']}")
+                logger.info(f"✅ AI 모델에서 감정 확률 획득: 클러스터 {ai_result['cluster']} (신뢰도: {ai_result['confidence']:.3f})")
 
             if selected_idx is None:
                 selected_idx = ai_result["selected_idx"]
@@ -361,15 +456,21 @@ def process_second_recommendation_with_ai(
             # 룰 기반 폴백
             emotion_proba = [0.1, 0.15, 0.4, 0.15, 0.1, 0.1]
 
-            # 기본 필터링으로 selected_idx 생성
-            candidates = df.copy()
-            if 'gender' in df.columns and user_preferences.get("gender"):
-                gender_filtered = candidates[candidates['gender'] == user_preferences["gender"]]
-                if not gender_filtered.empty:
-                    candidates = gender_filtered
+            # 🚨 정규화된 데이터로 기본 필터링
+            try:
+                normalized_preferences = normalize_frontend_data(user_preferences)
+                candidates = df.copy()
+                if 'gender' in df.columns and normalized_preferences.get("gender"):
+                    gender_filtered = candidates[candidates['gender'] == normalized_preferences["gender"]]
+                    if not gender_filtered.empty:
+                        candidates = gender_filtered
 
-            selected_idx = candidates.head(10).index.tolist()
-            logger.info(f"📋 룰 기반 폴백으로 {len(selected_idx)}개 인덱스 생성")
+                selected_idx = candidates.head(10).index.tolist()
+                logger.info(f"📋 룰 기반 폴백으로 {len(selected_idx)}개 인덱스 생성")
+            except Exception as fallback_e:
+                logger.error(f"❌ 룰 기반 폴백도 실패: {fallback_e}")
+                # 최종 안전장치
+                selected_idx = list(range(10))
 
     # 2. 기존 2차 추천 로직 수행
     return process_second_recommendation(user_note_scores, emotion_proba, selected_idx)
@@ -385,7 +486,8 @@ def process_second_recommendation(
 
     logger.info(f"🎯 2차 추천 처리 시작")
     logger.info(f"  📝 사용자 노트 선호도: {user_note_scores}")
-    logger.info(f"  📋 선택된 인덱스: {len(selected_idx)}개")
+    logger.info(f"  🧠 감정 확률 분포: {[f'{p:.3f}' for p in emotion_proba]}")
+    logger.info(f"  📋 선택된 인덱스: {selected_idx[:5]}... (총 {len(selected_idx)}개)")
 
     # 선택된 인덱스에 해당하는 향수들 필터링
     valid_indices = [idx for idx in selected_idx if idx < len(df)]
@@ -445,6 +547,11 @@ def process_second_recommendation(
 
             results.append(result_item)
 
+            # 상세 로깅 (상위 3개만)
+            if idx < 3:
+                logger.info(f"📊 #{idx + 1} {perfume_name}: 노트매칭={note_match_score:.3f}, "
+                            f"감정가중치={emotion_weight:.3f}, 최종점수={final_score:.3f}")
+
         except Exception as e:
             logger.error(f"❌ 향수 '{row.get('name', 'Unknown')}' 처리 중 오류: {e}")
             continue
@@ -455,10 +562,14 @@ def process_second_recommendation(
     processing_time = (datetime.now() - start_time).total_seconds()
     logger.info(f"✅ 2차 추천 처리 완료: {len(results)}개 향수 (소요시간: {processing_time:.3f}초)")
 
+    if results:
+        top_scores = [r['final_score'] for r in results[:3]]
+        logger.info(f"📊 상위 3개 점수: {top_scores}")
+
     return results
 
 
-# ─── 6. 라우터 설정 ─────────────────────────────────────────────────────────────
+# ─── 7. 라우터 설정 ─────────────────────────────────────────────────────────────
 router = APIRouter(prefix="/perfumes", tags=["Second Recommendation"])
 
 # 시작 시 모델 가용성 확인
@@ -480,40 +591,47 @@ logger.info("✅ 2차 추천 시스템 초기화 완료")
 @router.post(
     "/recommend-2nd",
     response_model=List[SecondRecommendItem],
-    summary="2차 향수 추천 - AI 모델 + 노트 선호도 기반",
+    summary="2차 향수 추천 - AI 모델 + 노트 선호도 기반 (수정됨)",
     description=(
-            "🎯 **완전한 End-to-End 2차 향수 추천 API**\n\n"
-            "사용자 선호도를 기반으로 AI 모델을 호출하여 1차 추천을 수행한 후,\n"
-            "노트 선호도와 결합하여 정밀한 2차 추천을 제공합니다.\n\n"
+            "🎯 **완전한 End-to-End 2차 향수 추천 API (데이터 매핑 수정)**\n\n"
+            "프론트엔드에서 오는 데이터를 자동으로 백엔드 AI 모델 형식에 맞게 변환하여\n"
+            "정확한 1차 추천을 수행한 후, 노트 선호도와 결합하여 정밀한 2차 추천을 제공합니다.\n\n"
+            "**🔄 자동 데이터 변환:**\n"
+            "- 'Pure' → 'pure, friendly'\n"
+            "- 'Unisex' → 'unisex'\n"
+            "- 'Summer' → 'summer'\n"
+            "- 기타 대소문자 및 형식 정규화\n\n"
             "**📥 입력 정보:**\n"
-            "- `user_preferences`: 사용자 기본 선호도 (AI 모델 입력용)\n"
+            "- `user_preferences`: 사용자 기본 선호도 (대소문자 무관)\n"
             "- `user_note_scores`: 사용자의 노트별 선호도 점수 (0-5)\n"
             "- `emotion_proba` (선택): 감정 확률 배열\n"
             "- `selected_idx` (선택): 선택된 향수 인덱스\n\n"
             "**🤖 처리 과정:**\n"
-            "1. AI 모델 호출 → 감정 클러스터 예측 + 향수 선택\n"
-            "2. 노트 매칭 → 사용자 선호도와 향수 노트 비교\n"
-            "3. 점수 계산 → 노트 매칭(70%) + 감정 가중치(25%) + 다양성(5%)\n"
-            "4. 최종 정렬 → 점수 기준 내림차순\n\n"
+            "1. 데이터 정규화 → 프론트엔드 데이터를 AI 모델 형식으로 변환\n"
+            "2. AI 모델 호출 → 감정 클러스터 예측 + 향수 선택\n"
+            "3. 노트 매칭 → 사용자 선호도와 향수 노트 비교\n"
+            "4. 점수 계산 → 노트 매칭(70%) + 감정 가중치(25%) + 다양성(5%)\n"
+            "5. 최종 정렬 → 점수 기준 내림차순\n\n"
             "**✨ 특징:**\n"
+            "- 🔄 자동 데이터 정규화\n"
             "- 🤖 AI 모델 자동 호출\n"
             "- 🎯 정확한 노트 매칭\n"
             "- 📊 감정 클러스터 기반 가중치\n"
-            "- 🔄 AI 모델 실패 시 룰 기반 폴백\n"
+            "- 🔄 다단계 폴백 시스템\n"
             "- 🌟 브랜드 다양성 보장"
     )
 )
 def recommend_second_perfumes(request: SecondRecommendRequest):
-    """AI 모델 포함 완전한 2차 향수 추천 API"""
+    """AI 모델 포함 완전한 2차 향수 추천 API (데이터 매핑 수정)"""
 
     request_start_time = datetime.now()
 
     logger.info(f"🆕 AI 모델 포함 2차 향수 추천 요청 접수")
-    logger.info(f"  👤 사용자 선호도: {request.user_preferences.dict()}")
+    logger.info(f"  👤 원본 사용자 선호도: {request.user_preferences.dict()}")
     logger.info(f"  📊 노트 선호도 개수: {len(request.user_note_scores)}개")
 
     try:
-        # 메인 추천 처리 (AI 모델 포함)
+        # 메인 추천 처리 (AI 모델 포함, 데이터 정규화 적용)
         results = process_second_recommendation_with_ai(
             user_preferences=request.user_preferences.dict(),
             user_note_scores=request.user_note_scores,
@@ -548,6 +666,13 @@ def recommend_second_perfumes(request: SecondRecommendRequest):
         logger.info(f"✅ AI 모델 포함 2차 추천 완료: {len(response_items)}개 향수")
         logger.info(f"⏱️ 총 처리 시간: {total_processing_time:.3f}초")
         logger.info(f"📊 최고 점수: {response_items[0].final_score:.3f} ({response_items[0].name})")
+        logger.info(f"📊 점수 범위: {response_items[-1].final_score:.3f} ~ {response_items[0].final_score:.3f}")
+
+        # 클러스터별 분포 로깅
+        cluster_distribution = {}
+        for item in response_items:
+            cluster_distribution[item.emotion_cluster] = cluster_distribution.get(item.emotion_cluster, 0) + 1
+        logger.info(f"📊 클러스터별 분포: {cluster_distribution}")
 
         return response_items
 
@@ -561,7 +686,7 @@ def recommend_second_perfumes(request: SecondRecommendRequest):
         )
 
 
-# ─── 7. 시스템 상태 API ─────────────────────────────────────────────────────
+# ─── 8. 시스템 상태 API ─────────────────────────────────────────────────────
 @router.get(
     "/system-status",
     summary="2차 추천 시스템 상태",
@@ -618,25 +743,75 @@ def get_system_status():
                 "total_note_occurrences": len(all_notes)
             },
             "supported_features": [
+                "프론트엔드 데이터 자동 정규화",  # 🆕 추가
                 "노트 선호도 기반 매칭",
                 "감정 클러스터 가중치",
                 "브랜드 다양성 보장",
                 "노트명 정규화",
                 "부분 매칭 지원",
-                "AI 모델 자동 호출"
-            ]
+                "AI 모델 자동 호출",
+                "다단계 폴백 시스템"  # 🆕 추가
+            ],
+            "data_mapping": {  # 🆕 추가
+                "frontend_to_backend": {
+                    "Pure → pure, friendly": "단일 감정을 조합 감정으로 매핑",
+                    "Unisex → unisex": "대소문자 정규화",
+                    "Summer → summer": "대소문자 정규화",
+                    "Day → day": "대소문자 정규화",
+                    "Work → work": "대소문자 정규화",
+                    "Any → any": "대소문자 정규화"
+                }
+            }
         }
 
     except Exception as e:
         logger.error(f"❌ 시스템 상태 확인 중 오류: {e}")
         return {
             "system_status": "error",
-            "timestamp": datetime.now().isoformat(),  # ✅ 에러 시에도 timestamp 추가
+            "timestamp": datetime.now().isoformat(),
             "error_message": str(e)
         }
 
 
-# ─── 8. 추가 유틸리티 API들 ─────────────────────────────────────────────────────
+# ─── 9. 디버깅 API들 ─────────────────────────────────────────────────────
+@router.post(
+    "/debug/test-data-mapping",
+    summary="데이터 매핑 테스트",
+    description="프론트엔드 데이터가 백엔드 형식으로 올바르게 변환되는지 테스트합니다."
+)
+def test_data_mapping(frontend_data: Dict):
+    """데이터 매핑 테스트 API"""
+    try:
+        logger.info(f"🧪 데이터 매핑 테스트 시작: {frontend_data}")
+
+        # 정규화 수행
+        normalized = normalize_frontend_data(frontend_data)
+
+        # 유효성 검사
+        is_valid = validate_ai_model_input(normalized)
+
+        return {
+            "original_data": frontend_data,
+            "normalized_data": normalized,
+            "is_valid_for_ai_model": is_valid,
+            "mapping_applied": {
+                field: {
+                    "original": frontend_data.get(field, "N/A"),
+                    "normalized": normalized.get(field, "N/A"),
+                    "changed": frontend_data.get(field, "").lower() != normalized.get(field, "")
+                }
+                for field in ['gender', 'season_tags', 'time_tags', 'desired_impression', 'activity', 'weather']
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"❌ 데이터 매핑 테스트 중 오류: {e}")
+        return {
+            "error": str(e),
+            "original_data": frontend_data
+        }
+
+
 @router.get(
     "/note-analysis/{perfume_index}",
     summary="향수 노트 분석",
