@@ -22,3 +22,7 @@ __pycache__/
 .vscode/
 
 
+
+# 🎭 감정 태깅 모델 (Google Drive 호스팅)
+emotion_models/scent_emotion_model_v6.keras
+emotion_models/vectorizer.pkl
