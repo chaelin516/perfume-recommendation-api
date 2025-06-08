@@ -1,4 +1,4 @@
-# main.py - 2차 추천 라우터 추가 및 최적화 버전
+# main.py - 감정 태깅 라우터 추가 및 최적화 버전
 import logging
 import sys
 import traceback
@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 # FastAPI 앱 생성
 app = FastAPI(
     title="Whiff API",
-    description="AI 기반 향수 추천 및 시향 코스 추천 서비스의 백엔드 API입니다.",
-    version="1.2.0"  # 2차 추천 기능 추가로 버전 업데이트
+    description="AI 기반 향수 추천, 시향 코스 추천 및 감정 태깅 서비스의 백엔드 API입니다.",
+    version="1.3.0"  # 감정 태깅 기능 추가로 버전 업데이트
 )
 
 # CORS 설정
@@ -108,7 +108,7 @@ async def startup_event():
         logger.info(f"📋 기본 설정:")
         logger.info(f"  - 포트: {port}")
         logger.info(f"  - 환경: {environment}")
-        logger.info(f"  - API 버전: 1.2.0 (2차 추천 기능 포함)")
+        logger.info(f"  - API 버전: 1.3.0 (감정 태깅 기능 포함)")
 
         # Firebase 초기화 확인 (빠른 체크)
         try:
@@ -120,6 +120,11 @@ async def startup_event():
 
         # ML 모델은 lazy loading으로 처리 (시작 시 로딩하지 않음)
         logger.info("🤖 ML 모델: Lazy Loading 설정 완료")
+
+        # 감정 태깅 모델 파일 확인
+        emotion_model_path = os.path.join(os.path.dirname(__file__), "emotion_models/scent_emotion_model_v6.keras")
+        emotion_model_exists = os.path.exists(emotion_model_path)
+        logger.info(f"🎭 감정 태깅 모델: {'✅ 파일 존재' if emotion_model_exists else '❌ 파일 없음'}")
 
         logger.info("✅ Whiff API 서버가 빠르게 시작되었습니다!")
 
@@ -134,7 +139,7 @@ async def shutdown_event():
     logger.info("🔚 Whiff API 서버가 종료됩니다.")
 
 
-# 🎯 모든 라우터 등록 (2차 추천 라우터 포함)
+# 🎯 모든 라우터 등록 (감정 태깅 라우터 포함)
 try:
     logger.info("📋 라우터 등록 시작...")
 
@@ -148,15 +153,17 @@ try:
     from routers.recommendation_save_router import router as recommendation_save_router
     from routers.user_router import router as user_router
 
-    # 🆕 2차 추천 라우터 추가
+    # 2차 추천 및 감정 태깅 라우터 추가
     from routers.recommend_2nd_router import router as recommend_2nd_router
+    from routers.emotion_tagging_router import router as emotion_tagging_router  # 🆕 추가
 
     # 라우터 등록 (등록 순서 중요)
     app.include_router(perfume_router)  # 기본 향수 정보
     app.include_router(store_router)  # 매장 정보
     app.include_router(course_router)  # 시향 코스
     app.include_router(recommend_router)  # 1차 추천 (기존)
-    app.include_router(recommend_2nd_router)  # 🆕 2차 추천 (노트 기반)
+    app.include_router(recommend_2nd_router)  # 2차 추천 (노트 기반)
+    app.include_router(emotion_tagging_router)  # 🆕 감정 태깅 (AI 모델)
     app.include_router(diary_router)  # 시향 일기
     app.include_router(auth_router)  # 인증
     app.include_router(user_router)  # 사용자 관리
@@ -164,6 +171,7 @@ try:
 
     logger.info("✅ 모든 라우터 등록 완료")
     logger.info("🆕 2차 추천 라우터 (/perfumes/recommend-2nd) 추가됨")
+    logger.info("🎭 감정 태깅 라우터 (/emotions/*) 추가됨")  # 🆕 추가
 
 except Exception as e:
     logger.error(f"❌ 라우터 등록 중 오류: {e}")
@@ -176,12 +184,13 @@ def read_root():
     return {
         "message": "✅ Whiff API is running!",
         "status": "ok",
-        "version": "1.2.0",
+        "version": "1.3.0",
         "environment": "production" if os.getenv("RENDER") else "development",
         "port": os.getenv("PORT", "8000"),
         "features": [
             "향수 추천 (1차)",
-            "향수 추천 (2차 - 노트 기반)",  # 🆕 추가됨
+            "향수 추천 (2차 - 노트 기반)",
+            "감정 태깅 (AI 모델)",  # 🆕 추가
             "시향 일기",
             "매장 정보",
             "코스 추천",
@@ -191,7 +200,9 @@ def read_root():
         "new_features": [
             "🆕 2차 추천 API (/perfumes/recommend-2nd)",
             "🎯 사용자 노트 선호도 기반 정밀 추천",
-            "🧮 AI 감정 클러스터 + 노트 매칭 알고리즘"
+            "🧮 AI 감정 클러스터 + 노트 매칭 알고리즘",
+            "🎭 감정 태깅 API (/emotions/predict)",  # 🆕 추가
+            "🤖 텍스트 기반 8가지 감정 분류"  # 🆕 추가
         ]
     }
 
@@ -209,13 +220,14 @@ def health_check():
         return {
             "status": "ok",
             "service": "Whiff API",
-            "version": "1.2.0",
+            "version": "1.3.0",
             "environment": "production" if os.getenv("RENDER") else "development",
             "port": os.getenv("PORT", "8000"),
             "uptime": "running",
             "features_available": [
                 "1차 추천",
-                "2차 추천 (노트 기반)",  # 🆕
+                "2차 추천 (노트 기반)",
+                "감정 태깅 (AI 모델)",  # 🆕
                 "시향 일기",
                 "매장 정보",
                 "사용자 인증"
@@ -255,41 +267,68 @@ def get_server_status():
         except Exception as e:
             logger.error(f"SMTP 상태 확인 실패: {e}")
 
+        # 감정 모델 상태 확인
+        emotion_model_status = None
+        try:
+            emotion_model_path = os.path.join(os.path.dirname(__file__), "emotion_models/scent_emotion_model_v6.keras")
+            vectorizer_path = os.path.join(os.path.dirname(__file__), "emotion_models/vectorizer.pkl")
+
+            emotion_model_status = {
+                "model_exists": os.path.exists(emotion_model_path),
+                "vectorizer_exists": os.path.exists(vectorizer_path),
+                "model_size_mb": round(os.path.getsize(emotion_model_path) / 1024 / 1024, 2) if os.path.exists(
+                    emotion_model_path) else 0
+            }
+        except Exception as e:
+            logger.error(f"감정 모델 상태 확인 실패: {e}")
+
         return {
             "service": "Whiff API",
-            "version": "1.2.0",
+            "version": "1.3.0",
             "status": "running",
             "environment": "production" if os.getenv("RENDER") else "development",
             "firebase": firebase_status,
             "smtp": smtp_status,
+            "emotion_model": emotion_model_status,  # 🆕 추가
             "features": {
                 "auth": "Firebase Authentication",
                 "database": "SQLite + JSON Files",
                 "ml_model": "TensorFlow (Lazy Loading)",
+                "emotion_ai": "TensorFlow Emotion Classification",  # 🆕 추가
                 "deployment": "Render.com",
                 "email": "SMTP (Gmail)"
             },
             "endpoints": {
                 "perfumes": "향수 정보 및 1차 추천",
-                "perfumes_2nd": "🆕 2차 추천 (노트 기반)",  # 🆕 추가
+                "perfumes_2nd": "2차 추천 (노트 기반)",
+                "emotions": "🆕 감정 태깅 (AI 모델)",  # 🆕 추가
                 "stores": "매장 정보",
                 "courses": "시향 코스 추천",
                 "diaries": "시향 일기",
                 "auth": "사용자 인증",
                 "users": "사용자 관리"
             },
-            "recommendation_system": {
-                "primary_recommendation": {
-                    "endpoint": "/perfumes/recommend-cluster",
-                    "method": "AI 감정 클러스터 모델",
-                    "input": "사용자 선호도 6개 특성",
-                    "output": "클러스터 + 향수 인덱스"
+            "ai_models": {  # 🆕 추가
+                "recommendation_system": {
+                    "primary_recommendation": {
+                        "endpoint": "/perfumes/recommend-cluster",
+                        "method": "AI 감정 클러스터 모델",
+                        "input": "사용자 선호도 6개 특성",
+                        "output": "클러스터 + 향수 인덱스"
+                    },
+                    "secondary_recommendation": {
+                        "endpoint": "/perfumes/recommend-2nd",
+                        "method": "노트 매칭 + 감정 가중치",
+                        "input": "노트 선호도 + 감정 확률 + 선택 인덱스",
+                        "output": "정밀 점수 기반 추천"
+                    }
                 },
-                "secondary_recommendation": {  # 🆕 추가
-                    "endpoint": "/perfumes/recommend-2nd",
-                    "method": "노트 매칭 + 감정 가중치",
-                    "input": "노트 선호도 + 감정 확률 + 선택 인덱스",
-                    "output": "정밀 점수 기반 추천"
+                "emotion_tagging": {
+                    "endpoint": "/emotions/predict",
+                    "method": "TensorFlow 감정 분류 모델",
+                    "input": "한국어 텍스트",
+                    "output": "8가지 감정 중 예측 + 확률",
+                    "emotions": ["기쁨", "불안", "당황", "분노", "상처", "슬픔", "우울", "흥분"]
                 }
             }
         }
@@ -307,8 +346,8 @@ def get_api_info():
     """API 기능 및 엔드포인트 정보 제공"""
     return {
         "api_name": "Whiff API",
-        "version": "1.2.0",
-        "description": "AI 기반 향수 추천 및 시향 코스 추천 서비스",
+        "version": "1.3.0",
+        "description": "AI 기반 향수 추천, 시향 코스 추천 및 감정 태깅 서비스",
         "documentation_url": "/docs",
         "redoc_url": "/redoc",
 
@@ -327,7 +366,7 @@ def get_api_info():
                 }
             },
             "step_2": {
-                "title": "2차 추천 (🆕 신규)",
+                "title": "2차 추천",
                 "endpoint": "/perfumes/recommend-2nd",
                 "description": "노트 선호도 + 1차 결과 → 정밀 점수 계산 → 최종 추천",
                 "input_example": {
@@ -345,9 +384,28 @@ def get_api_info():
             }
         },
 
+        "emotion_tagging": {  # 🆕 추가
+            "title": "감정 태깅",
+            "endpoint": "/emotions/predict",
+            "description": "시향 일기나 리뷰 텍스트 → AI 감정 분류 → 8가지 감정 중 예측",
+            "input_example": {
+                "text": "이 향수는 정말 좋아요! 기분이 상쾌해집니다."
+            },
+            "output_example": {
+                "emotion": "기쁨",
+                "confidence": 0.85,
+                "all_emotions": {
+                    "기쁨": 0.85,
+                    "흥분": 0.12,
+                    "기타": "..."
+                }
+            }
+        },
+
         "main_features": [
             "🤖 AI 감정 클러스터 기반 1차 추천",
             "🎯 노트 선호도 기반 2차 정밀 추천",
+            "🎭 AI 기반 텍스트 감정 태깅",  # 🆕 추가
             "📝 시향 일기 작성 및 관리",
             "🗺️ 위치 기반 시향 코스 추천",
             "🏪 매장 정보 및 검색",
@@ -362,7 +420,8 @@ def get_api_info():
             "authentication": "Firebase Auth",
             "database": "SQLite + JSON Files",
             "deployment": "Render.com",
-            "email": "SMTP (Gmail)"
+            "email": "SMTP (Gmail)",
+            "ai_models": "감정 분류 + 추천 시스템"  # 🆕 추가
         }
     }
 
@@ -375,7 +434,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
 
     logger.info(f"🚀 서버 시작: 포트 {port}")
-    logger.info(f"🆕 2차 추천 기능이 포함된 Whiff API v1.2.0")
+    logger.info(f"🆕 감정 태깅 기능이 포함된 Whiff API v1.3.0")
 
     uvicorn.run(
         "main:app",
