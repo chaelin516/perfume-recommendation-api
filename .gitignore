@@ -21,6 +21,4 @@ __pycache__/
 # ⚙️ VSCode 설정
 .vscode/
 
-firebase_key.jsonemotion_models/scent_emotion_model_v6.keras
-emotion_models/*.keras
-models/*.keras
+
