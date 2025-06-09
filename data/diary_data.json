@@ -51,5 +51,95 @@
       "energetic"
     ],
     "created_at": "2025-05-20 15:10:33.322661"
+  },
+  {
+    "id": "799fca94-410f-4dde-9f62-70241f00d25d",
+    "user_id": "test-user-123",
+    "user_name": "테스트 사용자",
+    "user_profile_image": "",
+    "perfume_id": "perfume_chanel_no.5",
+    "perfume_name": "Chanel No.5",
+    "brand": "Unknown Brand",
+    "content": "오늘은 봄바람이 느껴지는 향수와 산책했어요.",
+    "tags": [
+      "#memory",
+      "#reminiscent",
+      "#curious",
+      "spring",
+      "#sentimental",
+      "#longing",
+      "#energetic",
+      "#excited",
+      "#fresh",
+      "#nostalgic",
+      "calm"
+    ],
+    "likes": 0,
+    "comments": 0,
+    "is_public": false,
+    "created_at": "2025-06-10T00:40:18.218776",
+    "updated_at": "2025-06-10T00:40:18.218776",
+    "emotion_analysis": {
+      "success": true,
+      "primary_emotion": "그리움",
+      "confidence": 0.6,
+      "emotion_tags": [
+        "#memory",
+        "#reminiscent",
+        "#curious",
+        "#sentimental",
+        "#longing",
+        "#energetic",
+        "#excited",
+        "#fresh",
+        "#nostalgic"
+      ],
+      "analysis_method": "rule_based",
+      "emotion_scores": {
+        "그리움": 0.6,
+        "설렘": 0.5,
+        "활력": 0.6,
+        "로맨틱": 0.4,
+        "자신감": 0.4
+      },
+      "context_detected": {
+        "계절": "봄",
+        "시간": null,
+        "상황": "외출"
+      },
+      "perfume_type": "기타",
+      "matched_keywords_summary": {
+        "그리움": [
+          "향수"
+        ],
+        "설렘": [
+          "컨텍스트:봄"
+        ],
+        "활력": [
+          "컨텍스트:봄"
+        ],
+        "로맨틱": [
+          "컨텍스트:봄"
+        ],
+        "자신감": [
+          "컨텍스트:외출"
+        ]
+      }
+    },
+    "primary_emotion": "그리움",
+    "emotion_confidence": 0.6,
+    "emotion_tags_auto": [
+      "#memory",
+      "#reminiscent",
+      "#curious",
+      "#sentimental",
+      "#longing",
+      "#energetic",
+      "#excited",
+      "#fresh",
+      "#nostalgic"
+    ],
+    "emotion_analysis_status": "completed",
+    "analysis_method": "rule_based"
   }
 ]

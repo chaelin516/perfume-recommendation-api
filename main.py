@@ -243,17 +243,8 @@ def register_routers():
             app.include_router(diary_router)
 
             router_status["diary_router"] = "✅ 성공"
-            logger.info("  ✅ 시향 일기 라우터 등록 완료 (감정 분석 포함)")
+            logger.info("  ✅ 시향 일기 라우터 등록 완료 ")
 
-            # 감정 분석기 상태 확인
-            try:
-                from routers.diary_router import EMOTION_ANALYZER_AVAILABLE
-                if EMOTION_ANALYZER_AVAILABLE:
-                    logger.info("    ✅ AI 감정 분석기 사용 가능")
-                else:
-                    logger.info("    ⚠️ 기본 감정 분석 모드로 동작")
-            except ImportError:
-                logger.info("    ⚠️ 감정 분석 상태 확인 불가")
 
         except ImportError as e:
             router_status["diary_router"] = f"❌ ImportError: {str(e)}"
@@ -427,18 +418,6 @@ def get_server_status():
         except Exception as e:
             logger.error(f"SMTP 상태 확인 실패: {e}")
 
-        # 감정 분석 상태 확인
-        emotion_status = None
-        try:
-            from utils.emotion_analyzer import emotion_analyzer
-            emotion_status = {
-                "available": True,
-                "supported_emotions": emotion_analyzer.get_supported_emotions(),
-                "stats": emotion_analyzer.get_analysis_stats()
-            }
-        except Exception as e:
-            emotion_status = {"available": False, "error": str(e)}
-
         return {
             "service": "Whiff API",
             "version": "1.3.0",
@@ -446,7 +425,6 @@ def get_server_status():
             "environment": "production" if os.getenv("RENDER") else "development",
             "firebase": firebase_status,
             "smtp": smtp_status,
-            "emotion_analysis": emotion_status,
             "features": {
                 "auth": "Firebase Authentication",
                 "database": "SQLite + JSON Files",
@@ -548,31 +526,6 @@ def get_api_info():
                         "vanilla": 1
                     }
                 }
-            }
-        },
-
-        "emotion_analysis_flow": {
-            "auto_tagging": {
-                "title": "자동 감정 태깅",
-                "endpoint": "/diaries/",
-                "description": "시향 일기 작성 시 자동으로 감정 분석 및 태깅",
-                "features": [
-                    "AI 모델 우선 분석",
-                    "룰 기반 폴백",
-                    "백그라운드 정밀 분석",
-                    "수동 태그 수정 지원"
-                ]
-            },
-            "statistics": {
-                "title": "감정 통계 분석",
-                "endpoint": "/diaries/emotion-statistics",
-                "description": "전체 일기의 감정 분포 및 트렌드 분석",
-                "features": [
-                    "실시간 감정 분포",
-                    "신뢰도 통계",
-                    "인기 감정 순위",
-                    "분석 성공률"
-                ]
             }
         },
 
