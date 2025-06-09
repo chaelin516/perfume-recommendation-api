@@ -207,15 +207,27 @@ try:
     from routers.recommendation_save_router import router as recommendation_save_router
     from routers.user_router import router as user_router
 
-    # 🆕 2차 추천 라우터 추가
-    from routers.recommend_2nd_router import router as recommend_2nd_router
+    # 🆕 2차 추천 라우터 추가 (안전한 import)
+    try:
+        from routers.recommend_2nd_router import router as recommend_2nd_router
+
+        RECOMMEND_2ND_AVAILABLE = True
+        logger.info("✅ 2차 추천 라우터 import 성공")
+    except Exception as e:
+        RECOMMEND_2ND_AVAILABLE = False
+        logger.error(f"❌ 2차 추천 라우터 import 실패: {e}")
+        recommend_2nd_router = None
 
     # 라우터 등록 (등록 순서 중요)
     app.include_router(perfume_router)  # 기본 향수 정보
     app.include_router(store_router)  # 매장 정보
     app.include_router(course_router)  # 시향 코스
     app.include_router(recommend_router)  # 1차 추천 (기존)
-    app.include_router(recommend_2nd_router)  # 🆕 2차 추천 (노트 기반)
+    if RECOMMEND_2ND_AVAILABLE and recommend_2nd_router:  # 🆕 2차 추천 (노트 기반) - 안전한 등록
+        app.include_router(recommend_2nd_router)
+        logger.info("✅ 2차 추천 라우터 등록 완료")
+    else:
+        logger.warning("⚠️ 2차 추천 라우터 등록 건너뜀")
     app.include_router(diary_router)  # 시향 일기 (감정 태깅 연동)
     app.include_router(auth_router)  # 인증
     app.include_router(user_router)  # 사용자 관리

@@ -1,5 +1,5 @@
-# routers/recommend_2nd_router.py - 완성본 (누락 함수들 추가)
-# 🆕 2차 향수 추천 API - 사용자 노트 선호도 기반 정밀 추천
+# routers/recommend_2nd_router.py
+# 🆕 2차 향수 추천 API - 사용자 노트 선호도 기반 정밀 추천 (완전한 버전)
 
 import os
 import pickle
@@ -201,113 +201,61 @@ EMOTION_CLUSTER_MAP = {
     5: "활기찬, 에너지"
 }
 
-# ─── 4. 모델 파일 경로 설정 및 전역 변수 ─────────────────────────────────────
-BASE_DIR = os.path.dirname(__file__)
-MODEL_PATH = os.path.join(BASE_DIR, "../models/final_model.keras")
-ENCODER_PATH = os.path.join(BASE_DIR, "../models/encoder.pkl")
 
-# 전역 변수 및 상태 관리
-_model = None
-_encoder = None
-_model_available = False
-_fallback_encoder = None
-
-
-# ─── 5. 모델 가용성 확인 함수 ─────────────────────────────────────────────────────────
-def check_model_availability():
-    """모델 파일들의 가용성을 확인합니다."""
-    global _model_available
-
-    logger.info("🔍 모델 파일 가용성 확인 중...")
-
-    try:
-        # 파일 존재 및 크기 확인
-        model_exists = os.path.exists(MODEL_PATH)
-        encoder_exists = os.path.exists(ENCODER_PATH)
-
-        model_valid = False
-        encoder_valid = False
-
-        if model_exists:
-            model_size = os.path.getsize(MODEL_PATH)
-            # ✅ 실제 모델 파일 크기에 맞게 수정: 31KB 모델이므로 10KB 이상으로 체크
-            model_valid = model_size > 10000  # 10KB 이상
-            logger.info(f"📄 모델 파일: {model_size:,}B ({model_size / 1024:.1f}KB) {'✅' if model_valid else '❌'}")
-        else:
-            logger.warning(f"⚠️ 모델 파일이 없습니다: {MODEL_PATH}")
-
-        if encoder_exists:
-            encoder_size = os.path.getsize(ENCODER_PATH)
-            # ✅ 인코더는 1KB이므로 500B 이상으로 체크
-            encoder_valid = encoder_size > 500  # 500B 이상
-            logger.info(f"📄 인코더 파일: {encoder_size:,}B ({encoder_size}B) {'✅' if encoder_valid else '❌'}")
-        else:
-            logger.warning(f"⚠️ 인코더 파일이 없습니다: {ENCODER_PATH}")
-
-        _model_available = model_valid and encoder_valid
-
-        logger.info(f"🤖 모델 가용성: {'✅ 사용 가능' if _model_available else '❌ 사용 불가'}")
-
-        if _model_available:
-            logger.info(f"✨ 모델 사용 준비 완료 - 크기: {model_size / 1024:.1f}KB")
-        else:
-            if not model_valid:
-                logger.warning(f"⚠️ 모델 파일 크기 부족: {model_size}B (최소 10KB 필요)")
-            if not encoder_valid:
-                logger.warning(f"⚠️ 인코더 파일 크기 부족: {encoder_size}B (최소 500B 필요)")
-
-        return _model_available
-
-    except Exception as e:
-        logger.error(f"❌ 모델 가용성 확인 중 오류: {e}")
-        _model_available = False
-        return False
-
-
-# ─── 6. AI 모델 호출 함수 ─────────────────────────────────────────────────────────
-def call_ai_model_for_first_recommendation(user_preferences: dict) -> Dict:
+# ─── 4. 1차 추천 AI 모델 호출 함수 (누락되었던 부분) ────────────────────────────────────
+def call_ai_model_for_first_recommendation(user_preferences: dict) -> Dict[str, Any]:
     """
-    1차 추천을 위한 AI 모델 호출 함수
-
-    Args:
-        user_preferences: 사용자 선호도 딕셔너리
-
-    Returns:
-        AI 모델 결과 (emotion_proba, selected_idx 포함)
+    1차 추천을 위한 AI 모델 호출
+    recommend_router의 predict_cluster_recommendation을 사용
     """
-    logger.info("🤖 AI 모델 1차 추천 호출 시작...")
-
     try:
-        # recommend_router의 함수들을 임포트하여 사용
-        from routers.recommend_router import predict_cluster_recommendation
+        logger.info(f"🤖 1차 추천 AI 모델 호출 시작: {user_preferences}")
+
+        # recommend_router에서 클러스터 기반 추천 함수 import
+        try:
+            from routers.recommend_router import predict_cluster_recommendation
+            logger.info("✅ predict_cluster_recommendation 함수 import 성공")
+        except ImportError as e:
+            logger.error(f"❌ predict_cluster_recommendation import 실패: {e}")
+            raise Exception(f"1차 추천 함수 import 실패: {e}")
 
         # AI 모델 호출
-        ai_result = predict_cluster_recommendation(user_preferences)
+        result = predict_cluster_recommendation(user_preferences)
 
-        # 결과 구조 확인 및 변환
-        if ai_result and isinstance(ai_result, dict):
-            result = {
-                "cluster": ai_result.get("cluster", 2),
-                "confidence": max(ai_result.get("proba", [0.4])),
-                "emotion_proba": ai_result.get("proba", [0.1, 0.15, 0.4, 0.15, 0.1, 0.1]),
-                "selected_idx": ai_result.get("selected_idx", []),
-                "method": "ai_cluster_model"
-            }
+        logger.info(f"✅ 1차 추천 AI 모델 호출 성공")
+        logger.info(f"  - 예측 클러스터: {result.get('cluster')}")
+        logger.info(f"  - 신뢰도: {result.get('metadata', {}).get('confidence', 0):.3f}")
+        logger.info(f"  - 선택된 인덱스: {len(result.get('selected_idx', []))}개")
 
-            logger.info(f"✅ AI 모델 1차 추천 성공: 클러스터 {result['cluster']}")
-            return result
-        else:
-            raise Exception("AI 모델 결과 구조가 올바르지 않습니다.")
+        # 결과를 SecondRecommendRequest에서 필요한 형태로 변환
+        return {
+            "emotion_proba": result.get("proba", [0.1, 0.15, 0.4, 0.15, 0.1, 0.1]),
+            "selected_idx": result.get("selected_idx", []),
+            "cluster": result.get("cluster", 2),
+            "confidence": result.get("metadata", {}).get("confidence", 0.0),
+            "method": "AI 감정 클러스터 모델"
+        }
 
-    except ImportError as e:
-        logger.error(f"❌ recommend_router 임포트 실패: {e}")
-        raise Exception("AI 모델 모듈을 찾을 수 없습니다.")
     except Exception as e:
-        logger.error(f"❌ AI 모델 호출 실패: {e}")
-        raise Exception(f"AI 모델 호출 중 오류: {str(e)}")
+        logger.error(f"❌ 1차 추천 AI 모델 호출 실패: {e}")
+        raise e
 
 
-# ─── 7. 노트 분석 유틸리티 함수들 ─────────────────────────────────────────────────
+# ─── 5. 모델 가용성 확인 (누락되었던 부분) ───────────────────────────────────────────
+try:
+    from routers.recommend_router import check_model_availability
+
+    _model_available = check_model_availability()
+    logger.info(f"🔍 1차 추천 모델 가용성: {'✅ 사용 가능' if _model_available else '❌ 사용 불가'}")
+except ImportError as e:
+    logger.error(f"❌ check_model_availability import 실패: {e}")
+    _model_available = False
+except Exception as e:
+    logger.error(f"❌ 모델 가용성 확인 실패: {e}")
+    _model_available = False
+
+
+# ─── 6. 노트 분석 유틸리티 함수들 ─────────────────────────────────────────────────
 def parse_notes_from_string(notes_str: str) -> List[str]:
     """
     노트 문자열을 파싱하여 개별 노트 리스트로 변환
@@ -527,7 +475,7 @@ def get_perfume_indices(cluster_perfumes: pd.DataFrame, top_k: int = 10) -> List
     return indices
 
 
-# ─── 8. 메인 추천 함수 ─────────────────────────────────────────────────────────
+# ─── 7. 메인 추천 함수 ─────────────────────────────────────────────────────────
 def process_second_recommendation_with_ai(
         user_preferences: dict,
         user_note_scores: Dict[str, int],
@@ -673,16 +621,15 @@ def process_second_recommendation(
     return results
 
 
-# ─── 9. 라우터 설정 및 모델 초기화 ─────────────────────────────────────────────────────────────
+# ─── 8. 라우터 설정 ────────────────────────────────────────────────
 router = APIRouter(prefix="/perfumes", tags=["Second Recommendation"])
 
 # 시작 시 모델 가용성 확인
 logger.info("🚀 2차 추천 시스템 (AI 모델 포함) 초기화 시작...")
-check_model_availability()
 if _model_available:
-    logger.info("🤖 AI 감정 클러스터 모델 사용 가능")
+    logger.info("🤖 1차 추천 AI 모델 사용 가능")
 else:
-    logger.info("📋 룰 기반 폴백 시스템으로 동작")
+    logger.info("📋 1차 추천 룰 기반 폴백 시스템으로 동작")
 logger.info("✅ 2차 추천 시스템 초기화 완료")
 
 
@@ -795,7 +742,7 @@ def recommend_second_perfumes(request: SecondRecommendRequest):
         )
 
 
-# ─── 10. 추가 유틸리티 API들 ─────────────────────────────────────────────────────
+# ─── 9. 추가 유틸리티 API들 ─────────────────────────────────────────────────────
 @router.get(
     "/note-analysis/{perfume_index}",
     summary="향수 노트 분석",
@@ -916,6 +863,7 @@ def get_system_status():
 
         return {
             "system_status": "operational",
+            "first_recommendation_model_available": _model_available,
             "dataset_info": {
                 "total_perfumes": total_perfumes,
                 "unique_brands": unique_brands,
@@ -932,18 +880,14 @@ def get_system_status():
                 "unique_notes_in_sample": len(note_frequency),
                 "total_note_occurrences": len(all_notes)
             },
-            "model_availability": {
-                "ai_model_available": _model_available,
-                "model_path": MODEL_PATH,
-                "encoder_path": ENCODER_PATH
-            },
             "supported_features": [
                 "노트 선호도 기반 매칭",
                 "감정 클러스터 가중치",
                 "브랜드 다양성 보장",
                 "노트명 정규화",
                 "부분 매칭 지원",
-                "AI 모델 자동 호출"
+                "AI 모델 자동 호출",
+                "룰 기반 폴백"
             ]
         }
 

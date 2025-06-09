@@ -1,14 +1,24 @@
-# routers/diary_router.py - 감정 태깅 기능 연동 버전
-
-from fastapi import APIRouter, Query, Depends
+from fastapi import APIRouter, Query, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from schemas.diary import DiaryCreateRequest, DiaryResponse
 from schemas.common import BaseResponse
 from datetime import datetime, date
 from typing import Optional
 from utils.auth_utils import verify_firebase_token_optional, get_firebase_status
-
 import os, json, uuid
+import logging
+
+# 🎭 감정 태깅 모델 import (안전한 import)
+try:
+    from utils.emotion_model_loader import predict_emotion, is_model_available, get_model_status
+
+    EMOTION_TAGGING_AVAILABLE = True
+    logger = logging.getLogger(__name__)
+    logger.info("🎭 감정 태깅 모듈 import 성공")
+except ImportError as e:
+    EMOTION_TAGGING_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning(f"⚠️ 감정 태깅 모듈 import 실패: {e}")
 
 router = APIRouter(prefix="/diaries", tags=["Diary"])
 
@@ -21,87 +31,13 @@ if os.path.exists(DIARY_PATH):
     try:
         with open(DIARY_PATH, "r", encoding="utf-8") as f:
             diary_data = json.load(f)
-        print(f"✅ 시향 일기 데이터 로딩 완료: {len(diary_data)}개 항목")
+        logger.info(f"✅ 시향 일기 데이터 로딩 완료: {len(diary_data)}개 항목")
     except Exception as e:
-        print(f"❌ 시향 일기 데이터 로딩 실패: {e}")
+        logger.error(f"❌ 시향 일기 데이터 로딩 실패: {e}")
         diary_data = []
 else:
     diary_data = []
-    print("⚠️ 시향 일기 데이터 파일이 없습니다. 새로 생성됩니다.")
-
-
-# 🎭 감정 태깅 함수 (안전한 import)
-def get_emotion_tags_for_text(text: str) -> dict:
-    """텍스트에서 감정 태그 예측 (안전한 호출)"""
-    try:
-        from utils.emotion_tagging_model_loader import predict_emotion_tags, is_model_available
-
-        if not text or not text.strip():
-            return {
-                "success": False,
-                "predicted_emotion": "기쁨",  # 기본값
-                "confidence": 0.0,
-                "method": "빈 텍스트"
-            }
-
-        # 감정 태깅 모델 사용 가능 여부 확인
-        if is_model_available():
-            print(f"🎭 AI 감정 태깅 사용: '{text[:30]}...'")
-            result = predict_emotion_tags(text)
-        else:
-            print(f"📋 룰 기반 감정 태깅 사용: '{text[:30]}...'")
-            # 모델이 없으면 룰 기반 사용
-            from utils.emotion_tagging_model_loader import _rule_based_emotion_tagging
-            result = _rule_based_emotion_tagging(text)
-
-        return result
-
-    except ImportError as e:
-        print(f"⚠️ 감정 태깅 모듈 import 실패: {e}")
-        # 폴백: 간단한 룰 기반
-        return _simple_rule_based_tagging(text)
-    except Exception as e:
-        print(f"❌ 감정 태깅 중 오류: {e}")
-        # 폴백: 간단한 룰 기반
-        return _simple_rule_based_tagging(text)
-
-
-def _simple_rule_based_tagging(text: str) -> dict:
-    """간단한 룰 기반 감정 태깅 (완전 폴백)"""
-    try:
-        if not text:
-            return {
-                "success": True,
-                "predicted_emotion": "기쁨",
-                "confidence": 0.3,
-                "method": "기본값"
-            }
-
-        text_lower = text.lower()
-
-        # 간단한 키워드 기반 매칭
-        if any(word in text_lower for word in ["좋", "행복", "사랑", "완벽", "달콤", "따뜻"]):
-            return {"success": True, "predicted_emotion": "기쁨", "confidence": 0.7, "method": "간단 룰"}
-        elif any(word in text_lower for word in ["불안", "걱정", "떨", "두려"]):
-            return {"success": True, "predicted_emotion": "불안", "confidence": 0.7, "method": "간단 룰"}
-        elif any(word in text_lower for word in ["당황", "놀", "혼란", "이상"]):
-            return {"success": True, "predicted_emotion": "당황", "confidence": 0.7, "method": "간단 룰"}
-        elif any(word in text_lower for word in ["화", "짜증", "싫", "최악"]):
-            return {"success": True, "predicted_emotion": "분노", "confidence": 0.7, "method": "간단 룰"}
-        elif any(word in text_lower for word in ["상처", "아픈", "실망", "그리운"]):
-            return {"success": True, "predicted_emotion": "상처", "confidence": 0.7, "method": "간단 룰"}
-        elif any(word in text_lower for word in ["슬", "눈물", "외로", "쓸쓸"]):
-            return {"success": True, "predicted_emotion": "슬픔", "confidence": 0.7, "method": "간단 룰"}
-        elif any(word in text_lower for word in ["우울", "답답", "무기력", "어둠"]):
-            return {"success": True, "predicted_emotion": "우울", "confidence": 0.7, "method": "간단 룰"}
-        elif any(word in text_lower for word in ["흥분", "신나", "설렘", "활기"]):
-            return {"success": True, "predicted_emotion": "흥분", "confidence": 0.7, "method": "간단 룰"}
-        else:
-            return {"success": True, "predicted_emotion": "기쁨", "confidence": 0.4, "method": "기본값"}
-
-    except Exception as e:
-        print(f"❌ 간단 룰 기반 태깅 실패: {e}")
-        return {"success": True, "predicted_emotion": "기쁨", "confidence": 0.3, "method": "오류 폴백"}
+    logger.info("⚠️ 시향 일기 데이터 파일이 없습니다. 새로 생성됩니다.")
 
 
 # ✅ Firebase 상태 확인 API
@@ -110,28 +46,95 @@ async def check_firebase_status():
     return get_firebase_status()
 
 
-# ✅ 시향 일기 작성 API (🆕 감정 태깅 자동 적용)
-@router.post("/", summary="시향 일기 작성 (감정 태깅 자동 적용)", description="사용자가 향수에 대해 작성한 시향 일기를 저장하고 자동으로 감정 태그를 추가합니다.")
+# 🆕 감정 태깅 상태 확인 API
+@router.get("/emotion-tagging-status", summary="감정 태깅 상태 확인", description="감정 태깅 시스템 상태를 확인합니다.")
+async def check_emotion_tagging_status():
+    """감정 태깅 시스템 상태 확인"""
+    if not EMOTION_TAGGING_AVAILABLE:
+        return {
+            "available": False,
+            "message": "감정 태깅 모듈을 import할 수 없습니다",
+            "method": "사용 불가"
+        }
+
+    try:
+        status = get_model_status()
+        model_available = is_model_available()
+
+        return {
+            "available": True,
+            "ai_model_available": model_available,
+            "method": "AI 모델" if model_available else "룰 기반",
+            "supported_emotions": status.get("supported_emotions", []),
+            "total_emotion_count": status.get("total_emotion_count", 0),
+            "model_status": status
+        }
+    except Exception as e:
+        logger.error(f"❌ 감정 태깅 상태 확인 중 오류: {e}")
+        return {
+            "available": False,
+            "message": f"감정 태깅 상태 확인 실패: {str(e)}",
+            "method": "오류"
+        }
+
+
+# 🆕 감정 태깅 테스트 API
+@router.post("/test-emotion-tagging", summary="감정 태깅 테스트", description="텍스트에 대한 감정 태깅을 테스트합니다.")
+async def test_emotion_tagging(text: str):
+    """감정 태깅 테스트"""
+    if not EMOTION_TAGGING_AVAILABLE:
+        raise HTTPException(status_code=503, detail="감정 태깅 기능을 사용할 수 없습니다.")
+
+    if not text or not text.strip():
+        raise HTTPException(status_code=400, detail="텍스트를 입력해주세요.")
+
+    try:
+        predicted_emotion = predict_emotion(text.strip())
+        model_available = is_model_available()
+
+        return {
+            "input_text": text,
+            "predicted_emotion": predicted_emotion,
+            "method_used": "AI 모델" if model_available else "룰 기반",
+            "model_available": model_available,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"❌ 감정 태깅 테스트 중 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"감정 태깅 실패: {str(e)}")
+
+
+# ✅ 시향 일기 작성 API (감정 태깅 연동)
+@router.post("/", summary="시향 일기 작성", description="사용자가 향수에 대해 작성한 시향 일기를 저장합니다 (자동 감정 태깅 포함).")
 async def write_diary(entry: DiaryCreateRequest, user=Depends(verify_firebase_token_optional)):
     try:
         user_id = user["uid"]
         now = datetime.now().isoformat()
 
-        # 🎭 자동 감정 태깅 수행
-        emotion_result = {"predicted_emotion": "기쁨", "confidence": 0.0, "method": "기본값"}
+        # 🎭 자동 감정 태깅
+        auto_emotion_tags = []
+        emotion_tagging_method = "없음"
 
-        if entry.content and entry.content.strip():
-            print(f"🎭 시향일기 감정 태깅 시작: 사용자 {user.get('name', '익명')}")
-            emotion_result = get_emotion_tags_for_text(entry.content)
-            print(
-                f"🎭 감정 태깅 결과: {emotion_result.get('predicted_emotion', '알 수 없음')} (신뢰도: {emotion_result.get('confidence', 0):.3f})")
+        if EMOTION_TAGGING_AVAILABLE and entry.content and entry.content.strip():
+            try:
+                predicted_emotion = predict_emotion(entry.content.strip())
+                if predicted_emotion:
+                    auto_emotion_tags = [predicted_emotion]
+                    emotion_tagging_method = "AI 모델" if is_model_available() else "룰 기반"
+                    logger.info(
+                        f"🎭 자동 감정 태깅 완료: '{entry.content[:30]}...' → {predicted_emotion} ({emotion_tagging_method})")
+            except Exception as e:
+                logger.error(f"❌ 자동 감정 태깅 실패: {e}")
+                emotion_tagging_method = "실패"
 
-        # 기존 emotion_tags에 예측된 감정 추가
-        auto_emotion_tags = [emotion_result.get("predicted_emotion", "기쁨")]
-        user_emotion_tags = entry.emotion_tags or []
+        # 🔄 기존 태그와 자동 태그 결합
+        final_emotion_tags = list(entry.emotion_tags or [])
 
-        # 중복 제거하면서 합치기
-        final_emotion_tags = list(set(auto_emotion_tags + user_emotion_tags))
+        # 자동 태깅된 감정이 있고, 기존 태그에 없으면 추가
+        for auto_tag in auto_emotion_tags:
+            if auto_tag not in final_emotion_tags:
+                final_emotion_tags.append(auto_tag)
+                logger.info(f"🏷️ 자동 감정 태그 추가: {auto_tag}")
 
         # 새 일기 항목 생성
         diary = {
@@ -143,18 +146,18 @@ async def write_diary(entry: DiaryCreateRequest, user=Depends(verify_firebase_to
             "perfume_name": entry.perfume_name,
             "brand": "Dummy Brand",  # 실제 브랜드 연동 필요
             "content": entry.content or "",
-            "tags": final_emotion_tags,  # 🆕 자동 태깅된 감정 포함
+            "tags": final_emotion_tags,  # 자동 태깅 결과 포함
             "likes": 0,
             "comments": 0,
             "is_public": entry.is_public,
             "created_at": now,
             "updated_at": now,
-            # 🆕 감정 태깅 메타데이터 추가
+            # 🆕 감정 태깅 메타데이터
             "emotion_tagging": {
-                "auto_predicted": emotion_result.get("predicted_emotion", "기쁨"),
-                "confidence": emotion_result.get("confidence", 0.0),
-                "method": emotion_result.get("method", "기본값"),
-                "user_provided": entry.emotion_tags or [],
+                "auto_tagged": len(auto_emotion_tags) > 0,
+                "auto_emotions": auto_emotion_tags,
+                "method": emotion_tagging_method,
+                "original_tags": list(entry.emotion_tags or []),
                 "final_tags": final_emotion_tags
             }
         }
@@ -166,9 +169,9 @@ async def write_diary(entry: DiaryCreateRequest, user=Depends(verify_firebase_to
         with open(DIARY_PATH, "w", encoding="utf-8") as f:
             json.dump(diary_data, f, ensure_ascii=False, indent=2)
 
-        print(f"[DIARY] 새 일기 저장됨: {user.get('name', '익명')} - {entry.perfume_name}")
-        print(
-            f"[EMOTION] 자동 태깅: {emotion_result.get('predicted_emotion')} (신뢰도: {emotion_result.get('confidence', 0):.3f})")
+        logger.info(f"[DIARY] 새 일기 저장됨: {user.get('name', '익명')} - {entry.perfume_name}")
+        if auto_emotion_tags:
+            logger.info(f"[EMOTION] 자동 태깅: {auto_emotion_tags} ({emotion_tagging_method})")
 
         return JSONResponse(
             status_code=200,
@@ -176,23 +179,23 @@ async def write_diary(entry: DiaryCreateRequest, user=Depends(verify_firebase_to
                 "message": "시향 일기가 성공적으로 저장되었습니다.",
                 "diary_id": diary["id"],
                 "emotion_tagging": {
-                    "auto_predicted": emotion_result.get("predicted_emotion", "기쁨"),
-                    "confidence": emotion_result.get("confidence", 0.0),
-                    "method": emotion_result.get("method", "기본값"),
+                    "auto_tagged": len(auto_emotion_tags) > 0,
+                    "auto_emotions": auto_emotion_tags,
+                    "method": emotion_tagging_method,
                     "final_tags": final_emotion_tags
                 }
             }
         )
 
     except Exception as e:
-        print(f"❌ 일기 저장 중 오류: {e}")
+        logger.error(f"❌ 일기 저장 중 오류: {e}")
         return JSONResponse(
             status_code=500,
             content={"message": f"일기 저장 중 오류가 발생했습니다: {str(e)}"}
         )
 
 
-# ✅ 시향 일기 목록 조회 API
+# ✅ 시향 일기 목록 조회 API (기존 유지)
 @router.get("/", summary="시향 일기 목록 조회", description="저장된 모든 시향 일기를 반환합니다.", response_model=BaseResponse,
             response_model_by_alias=True)
 async def get_diary_list(
@@ -227,7 +230,7 @@ async def get_diary_list(
                 if not (content_match or perfume_match):
                     continue
 
-            # 🆕 감정 태그 필터 (자동 태깅 결과도 포함)
+            # 감정 태그 필터
             if emotion:
                 tags = diary.get("tags", [])
                 if isinstance(tags, list):
@@ -251,11 +254,10 @@ async def get_diary_list(
         end = start + size
         paginated_data = filtered_data[start:end]
 
-        # 응답 데이터 변환 (필요한 필드만 포함)
+        # 응답 데이터 변환
         response_data = []
         for item in paginated_data:
             try:
-                # DiaryResponse 스키마에 맞게 데이터 변환
                 diary_item = {
                     "id": item.get("id", ""),
                     "user_id": item.get("user_id", ""),
@@ -270,12 +272,12 @@ async def get_diary_list(
                     "comments": item.get("comments", 0),
                     "created_at": item.get("created_at", ""),
                     "updated_at": item.get("updated_at", ""),
-                    # 🆕 감정 태깅 정보 포함 (선택적)
+                    # 🆕 감정 태깅 정보 추가
                     "emotion_tagging": item.get("emotion_tagging", {})
                 }
                 response_data.append(diary_item)
             except Exception as e:
-                print(f"⚠️ 일기 항목 변환 오류: {e}")
+                logger.error(f"⚠️ 일기 항목 변환 오류: {e}")
                 continue
 
         return BaseResponse(
@@ -286,116 +288,114 @@ async def get_diary_list(
                 "page": page,
                 "size": size,
                 "has_next": end < len(filtered_data),
-                # 🆕 감정 태깅 통계 추가
-                "emotion_stats": _calculate_emotion_stats(filtered_data)
+                "emotion_tagging_available": EMOTION_TAGGING_AVAILABLE  # 🆕 추가
             }
         )
 
     except Exception as e:
-        print(f"❌ 일기 목록 조회 오류: {e}")
+        logger.error(f"❌ 일기 목록 조회 오류: {e}")
         return JSONResponse(
             status_code=500,
             content={"message": f"서버 오류: {str(e)}"}
         )
 
 
-def _calculate_emotion_stats(diaries: list) -> dict:
-    """감정 태그 통계 계산"""
+# ✅ 나머지 기존 API들 (좋아요, 사용자별 일기 등)은 그대로 유지...
+
+@router.post("/{diary_id}/like", summary="시향 일기 좋아요 추가", description="해당 시향 일기의 좋아요 수를 1 증가시킵니다.")
+async def like_diary(diary_id: str):
     try:
-        emotion_counts = {}
-        auto_tagging_stats = {"ai_model": 0, "rule_based": 0, "simple_rule": 0, "default": 0}
+        found = False
 
-        for diary in diaries:
-            # 감정 태그 개수
-            tags = diary.get("tags", [])
-            for tag in tags:
-                emotion_counts[tag] = emotion_counts.get(tag, 0) + 1
+        for diary in diary_data:
+            if diary.get("id") == diary_id:
+                diary["likes"] = diary.get("likes", 0) + 1
+                diary["updated_at"] = datetime.now().isoformat()
+                found = True
+                break
 
-            # 자동 태깅 방법 통계
-            emotion_tagging = diary.get("emotion_tagging", {})
-            method = emotion_tagging.get("method", "unknown")
-            if "AI" in method:
-                auto_tagging_stats["ai_model"] += 1
-            elif "룰 기반" in method:
-                auto_tagging_stats["rule_based"] += 1
-            elif "간단 룰" in method:
-                auto_tagging_stats["simple_rule"] += 1
-            else:
-                auto_tagging_stats["default"] += 1
+        if not found:
+            return JSONResponse(status_code=404, content={"message": "해당 일기를 찾을 수 없습니다."})
 
-        return {
-            "emotion_distribution": emotion_counts,
-            "auto_tagging_methods": auto_tagging_stats,
-            "total_diaries": len(diaries)
-        }
+        with open(DIARY_PATH, "w", encoding="utf-8") as f:
+            json.dump(diary_data, f, ensure_ascii=False, indent=2)
+
+        return JSONResponse(status_code=200, content={"message": "좋아요가 추가되었습니다."})
 
     except Exception as e:
-        print(f"⚠️ 감정 통계 계산 오류: {e}")
-        return {}
+        return JSONResponse(status_code=500, content={"message": f"좋아요 처리 중 오류: {str(e)}"})
 
 
-# 🆕 감정 태깅 테스트 API
-@router.post("/test-emotion-tagging", summary="감정 태깅 테스트", description="텍스트에 대한 감정 태깅을 테스트합니다.")
-async def test_emotion_tagging_api(text: str):
-    """감정 태깅 테스트 API"""
+@router.delete("/{diary_id}/unlike", summary="시향 일기 좋아요 취소", description="해당 시향 일기의 좋아요 수를 1 감소시킵니다.")
+async def unlike_diary(diary_id: str):
     try:
-        if not text or not text.strip():
-            return JSONResponse(
-                status_code=400,
-                content={"message": "텍스트를 입력해주세요."}
-            )
+        found = False
 
-        print(f"🧪 감정 태깅 테스트 요청: '{text[:50]}...'")
+        for diary in diary_data:
+            if diary.get("id") == diary_id:
+                diary["likes"] = max(0, diary.get("likes", 0) - 1)
+                diary["updated_at"] = datetime.now().isoformat()
+                found = True
+                break
 
-        # 감정 태깅 수행
-        result = get_emotion_tags_for_text(text)
+        if not found:
+            return JSONResponse(status_code=404, content={"message": "해당 일기를 찾을 수 없습니다."})
+
+        with open(DIARY_PATH, "w", encoding="utf-8") as f:
+            json.dump(diary_data, f, ensure_ascii=False, indent=2)
+
+        return JSONResponse(status_code=200, content={"message": "좋아요가 취소되었습니다."})
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"message": f"좋아요 취소 처리 중 오류: {str(e)}"})
+
+
+@router.get("/user/{user_id}", summary="사용자별 일기 조회", description="특정 사용자가 작성한 일기 목록을 반환합니다.")
+async def get_user_diaries(user_id: str, public_only: bool = Query(True, description="공개 일기만 조회할지 여부")):
+    try:
+        user_diaries = []
+
+        for diary in diary_data:
+            if diary.get("user_id") == user_id:
+                if public_only and not diary.get("is_public", False):
+                    continue
+                user_diaries.append(diary)
+
+        user_diaries.sort(key=lambda x: x.get("created_at", ""), reverse=True)
 
         return JSONResponse(
+            status_code=200,
             content={
-                "message": "감정 태깅 테스트 완료",
-                "input_text": text,
-                "result": result,
-                "timestamp": datetime.now().isoformat()
+                "message": f"사용자 {user_id}의 일기 조회 완료",
+                "data": user_diaries,
+                "count": len(user_diaries)
             }
         )
 
     except Exception as e:
-        print(f"❌ 감정 태깅 테스트 중 오류: {e}")
         return JSONResponse(
             status_code=500,
-            content={"message": f"감정 태깅 테스트 중 오류: {str(e)}"}
+            content={"message": f"사용자 일기 조회 중 오류: {str(e)}"}
         )
 
 
-# 🆕 감정 태깅 상태 확인 API
-@router.get("/emotion-tagging-status", summary="감정 태깅 시스템 상태", description="감정 태깅 시스템의 상태를 확인합니다.")
-async def get_emotion_tagging_status():
-    """감정 태깅 시스템 상태 확인"""
-    try:
-        from utils.emotion_tagging_model_loader import get_model_status, is_model_available
+@router.get("/status", summary="일기 시스템 상태", description="일기 시스템의 상태를 확인합니다.")
+async def get_diary_system_status():
+    emotion_status = {}
+    if EMOTION_TAGGING_AVAILABLE:
+        try:
+            emotion_status = get_model_status()
+            emotion_status["available"] = is_model_available()
+        except Exception as e:
+            emotion_status = {"error": str(e), "available": False}
+    else:
+        emotion_status = {"available": False, "error": "모듈 import 실패"}
 
-        status = get_model_status()
-        is_available = is_model_available()
-
-        return JSONResponse(
-            content={
-                "emotion_tagging_available": is_available,
-                "model_status": status,
-                "supported_emotions": status.get("supported_emotions", []),
-                "system_ready": True,
-                "fallback_available": True  # 룰 기반은 항상 사용 가능
-            }
-        )
-
-    except Exception as e:
-        print(f"❌ 감정 태깅 상태 확인 중 오류: {e}")
-        return JSONResponse(
-            content={
-                "emotion_tagging_available": False,
-                "error": str(e),
-                "fallback_available": True,
-                "system_ready": False
-            }
-        )
-
-# 기존 API들 (좋아요, 좋아요 취소, 사용자별 일기 조회, 시스템 상태 등)은 그대로 유지...
+    return {
+        "diary_count": len(diary_data),
+        "diary_file_exists": os.path.exists(DIARY_PATH),
+        "diary_file_path": DIARY_PATH,
+        "firebase_status": get_firebase_status(),
+        "emotion_tagging": emotion_status,  # 🆕 추가
+        "message": "일기 시스템 상태 정보입니다."
+    }

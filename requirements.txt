@@ -4,8 +4,13 @@
 numpy==2.0.2
 pandas==2.2.2
 tensorflow==2.18.0
-scikit-learn==1.6.1
+scikit-learn==1.7.0
 h5py==3.12.1
+
+# 🆕 NLP/Transformers packages (감정 태깅 모델용)
+transformers==4.52.4
+tokenizers==0.19.1
+torch==2.5.1
 
 # FastAPI 및 웹 서버 (최신 안정 버전)
 fastapi==0.115.4
@@ -22,11 +27,8 @@ sqlmodel==0.0.22
 # Firebase 인증 (최신 안정)
 firebase-admin==6.5.0
 
-# Google Drive 다운로드 (🆕 추가)
-gdown==5.1.0
-requests==2.32.3
-
 # 기타 유틸리티
+requests==2.32.3
 Pillow==10.4.0
 python-jose[cryptography]==3.3.0
 
