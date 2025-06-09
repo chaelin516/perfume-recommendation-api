@@ -1,4 +1,4 @@
-# main.py - 감정 태깅 모델 연동 및 2차 추천 라우터 포함 버전
+# main.py - 안전한 라우터 로딩 및 감정 태깅 연동 버전
 import logging
 import sys
 import traceback
@@ -95,7 +95,28 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     )
 
 
-# ✅ 서버 시작 이벤트 (감정 태깅 모델 연동)
+# ✅ 안전한 라우터 로딩 함수
+def safe_load_router(module_name: str, router_name: str = "router"):
+    """안전하게 라우터를 로딩하는 함수"""
+    try:
+        logger.info(f"📋 {module_name} 라우터 로딩 시도...")
+        module = __import__(module_name, fromlist=[router_name])
+        router = getattr(module, router_name)
+        logger.info(f"✅ {module_name} 라우터 로딩 성공")
+        return router, True
+    except ImportError as e:
+        logger.error(f"❌ {module_name} 라우터 import 실패: {e}")
+        return None, False
+    except AttributeError as e:
+        logger.error(f"❌ {module_name} 라우터 속성 오류: {e}")
+        return None, False
+    except Exception as e:
+        logger.error(f"❌ {module_name} 라우터 로딩 중 예외: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return None, False
+
+
+# ✅ 서버 시작 이벤트 (감정 태깅 선택적 로딩)
 @app.on_event("startup")
 async def startup_event():
     try:
@@ -118,10 +139,11 @@ async def startup_event():
         except Exception as e:
             logger.warning(f"⚠️ Firebase 상태 확인 건너뜀: {e}")
 
-        # 🎭 감정 태깅 모델 초기화 (Google Drive 연동) - 올바른 함수명 사용
+        # 🎭 감정 태깅 모델 초기화 (선택적)
         try:
-            logger.info("🎭 감정 태깅 모델 초기화 시작...")
-            from utils.emotion_model_loader import initialize_emotion_tagging_models, get_model_status
+            logger.info("🎭 감정 태깅 모델 초기화 시도...")
+            from utils.emotion_model_loader import initialize_emotion_tagging_models, get_model_status, \
+                is_model_available
 
             # 모델 초기화 시도
             success, message = initialize_emotion_tagging_models()
@@ -132,51 +154,34 @@ async def startup_event():
 
                 # 모델 상태 확인
                 status = get_model_status()
+                emotion_available = is_model_available()
                 logger.info(f"  - 감정 태깅 모델 로드됨: {'✅' if status['emotion_model_available'] else '❌'}")
                 logger.info(f"  - 벡터라이저 로드됨: {'✅' if status['vectorizer_available'] else '❌'}")
                 logger.info(f"  - 지원 감정 개수: {status['total_emotion_count']}개")
                 logger.info(f"  - 지원 감정: {', '.join(status['supported_emotions'])}")
+                logger.info(f"🎭 감정 태깅 시스템: {'✅ AI 모델 사용 가능' if emotion_available else '📋 룰 기반으로 동작'}")
 
             else:
                 logger.warning(f"⚠️ 감정 태깅 모델 로딩 실패: {message}")
                 logger.warning("⚠️ 감정 태깅은 룰 기반으로 동작합니다")
 
-                # 상세 상태 로깅
-                status = get_model_status()
-                logger.warning(f"- 감정 태깅 모델 파일 존재: {'✅' if status['emotion_model_exists'] else '❌'}")
-                logger.warning(f"- 벡터라이저 파일 존재: {'✅' if status['vectorizer_exists'] else '❌'}")
-                logger.warning(f"- 감정 태깅 모델 소스: {status['emotion_model_source']}")
-                logger.warning(f"- 벡터라이저 소스: {status['vectorizer_source']}")
-
         except ImportError as e:
-            logger.error(f"❌ 감정 태깅 모델 로더 임포트 실패: {e}")
-            logger.warning("⚠️ 감정 태깅은 룰 기반으로 동작합니다")
+            logger.warning(f"⚠️ 감정 태깅 모델 로더 import 실패: {e}")
+            logger.warning("⚠️ 감정 태깅 기능 비활성화 - 의존성 문제")
         except Exception as e:
-            logger.error(f"❌ 감정 태깅 모델 초기화 중 예외: {e}")
+            logger.warning(f"⚠️ 감정 태깅 모델 초기화 중 예외: {e}")
             logger.warning("⚠️ 감정 태깅은 룰 기반으로 동작합니다")
 
-        # 🎭 감정 태깅 시스템 상태 확인
+        # 🤖 향수 추천 모델 상태 확인 (선택적)
         try:
-            from utils.emotion_model_loader import is_model_available
-
-            emotion_available = is_model_available()
-            logger.info(f"🎭 감정 태깅 시스템: {'✅ AI 모델 사용 가능' if emotion_available else '📋 룰 기반으로 동작'}")
-
-        except ImportError as e:
-            logger.warning(f"⚠️ 감정 태깅 시스템 상태 확인 건너뜀: {e}")
-        except Exception as e:
-            logger.warning(f"⚠️ 감정 태깅 시스템 상태 확인 중 오류: {e}")
-
-        # 🤖 향수 추천 모델 상태 확인 (빠른 체크)
-        try:
-            from routers.recommend_router import check_model_availability
-            model_available = check_model_availability()
-            logger.info(f"🤖 향수 추천 모델: {'✅ 사용 가능' if model_available else '📋 룰 기반으로 동작'}")
+            # recommend_router에서 직접 import하지 않고 안전하게 체크
+            logger.info("🤖 향수 추천 모델 상태 확인...")
+            logger.info("🤖 향수 추천 모델: 라우터 로딩 후 확인 예정")
         except Exception as e:
             logger.warning(f"⚠️ 향수 추천 모델 상태 확인 건너뜀: {e}")
 
         # 🎭 시향 일기 감정 태깅 연동 정보
-        logger.info("🎭 시향 일기에 자동 감정 태깅 기능 연동됨")
+        logger.info("🎭 시향 일기에 자동 감정 태깅 기능 연동 준비됨")
         logger.info("  - 지원 감정: 기쁨, 불안, 당황, 분노, 상처, 슬픔, 우울, 흥분")
         logger.info("  - 자동 태깅: 일기 작성 시 AI 또는 룰 기반으로 감정 자동 분류")
 
@@ -193,52 +198,79 @@ async def shutdown_event():
     logger.info("🔚 Whiff API 서버가 종료됩니다.")
 
 
-# 🎯 모든 라우터 등록 (2차 추천 라우터 포함)
+# 🎯 안전한 라우터 등록
 try:
     logger.info("📋 라우터 등록 시작...")
 
-    # 기존 라우터들
-    from routers.perfume_router import router as perfume_router
-    from routers.store_router import router as store_router
-    from routers.course_router import router as course_router
-    from routers.recommend_router import router as recommend_router
-    from routers.diary_router import router as diary_router
-    from routers.auth_router import router as auth_router
-    from routers.recommendation_save_router import router as recommendation_save_router
-    from routers.user_router import router as user_router
+    # 필수 라우터들 (의존성 없음)
+    essential_routers = [
+        ("routers.perfume_router", "기본 향수 정보"),
+        ("routers.store_router", "매장 정보"),
+        ("routers.auth_router", "인증"),
+        ("routers.user_router", "사용자 관리"),
+        ("routers.recommendation_save_router", "추천 저장"),
+    ]
 
-    # 🆕 2차 추천 라우터 추가 (안전한 import)
-    try:
-        from routers.recommend_2nd_router import router as recommend_2nd_router
+    # 고급 라우터들 (의존성 있음)
+    advanced_routers = [
+        ("routers.course_router", "시향 코스"),
+        ("routers.recommend_router", "1차 추천"),
+        ("routers.diary_router", "시향 일기"),
+    ]
 
-        RECOMMEND_2ND_AVAILABLE = True
-        logger.info("✅ 2차 추천 라우터 import 성공")
-    except Exception as e:
-        RECOMMEND_2ND_AVAILABLE = False
-        logger.error(f"❌ 2차 추천 라우터 import 실패: {e}")
-        recommend_2nd_router = None
+    # 실험적 라우터들 (높은 의존성)
+    experimental_routers = [
+        ("routers.recommend_2nd_router", "2차 추천 (노트 기반)"),
+    ]
 
-    # 라우터 등록 (등록 순서 중요)
-    app.include_router(perfume_router)  # 기본 향수 정보
-    app.include_router(store_router)  # 매장 정보
-    app.include_router(course_router)  # 시향 코스
-    app.include_router(recommend_router)  # 1차 추천 (기존)
-    if RECOMMEND_2ND_AVAILABLE and recommend_2nd_router:  # 🆕 2차 추천 (노트 기반) - 안전한 등록
-        app.include_router(recommend_2nd_router)
-        logger.info("✅ 2차 추천 라우터 등록 완료")
+    registered_count = 0
+    failed_count = 0
+
+    # 1. 필수 라우터 등록
+    logger.info("📋 필수 라우터 등록...")
+    for module_name, description in essential_routers:
+        router, success = safe_load_router(module_name)
+        if success and router:
+            app.include_router(router)
+            logger.info(f"✅ {description} 라우터 등록 완료")
+            registered_count += 1
+        else:
+            logger.error(f"❌ {description} 라우터 등록 실패")
+            failed_count += 1
+
+    # 2. 고급 라우터 등록
+    logger.info("📋 고급 라우터 등록...")
+    for module_name, description in advanced_routers:
+        router, success = safe_load_router(module_name)
+        if success and router:
+            app.include_router(router)
+            logger.info(f"✅ {description} 라우터 등록 완료")
+            registered_count += 1
+        else:
+            logger.warning(f"⚠️ {description} 라우터 등록 실패 (선택적 기능)")
+            failed_count += 1
+
+    # 3. 실험적 라우터 등록 (실패해도 괜찮음)
+    logger.info("📋 실험적 라우터 등록...")
+    for module_name, description in experimental_routers:
+        router, success = safe_load_router(module_name)
+        if success and router:
+            app.include_router(router)
+            logger.info(f"✅ {description} 라우터 등록 완료")
+            registered_count += 1
+        else:
+            logger.info(f"🔄 {description} 라우터 등록 건너뜀 (실험적 기능)")
+            failed_count += 1
+
+    logger.info(f"📊 라우터 등록 완료: {registered_count}개 성공, {failed_count}개 실패")
+
+    if registered_count >= 5:  # 최소 5개 라우터는 등록되어야 함
+        logger.info("✅ 핵심 기능 라우터 등록 완료 - API 서비스 준비됨")
     else:
-        logger.warning("⚠️ 2차 추천 라우터 등록 건너뜀")
-    app.include_router(diary_router)  # 시향 일기 (감정 태깅 연동)
-    app.include_router(auth_router)  # 인증
-    app.include_router(user_router)  # 사용자 관리
-    app.include_router(recommendation_save_router)  # 추천 저장
-
-    logger.info("✅ 모든 라우터 등록 완료")
-    logger.info("🆕 2차 추천 라우터 (/perfumes/recommend-2nd) 추가됨")
-    logger.info("🎭 시향 일기에 감정 태깅 기능 연동됨")
+        logger.error("❌ 핵심 라우터 등록 실패 - API 서비스 불안정")
 
 except Exception as e:
-    logger.error(f"❌ 라우터 등록 중 오류: {e}")
+    logger.error(f"❌ 라우터 등록 중 치명적 오류: {e}")
     logger.error(f"Traceback: {traceback.format_exc()}")
 
 
@@ -254,7 +286,7 @@ def read_root():
         "features": [
             "향수 추천 (1차)",
             "향수 추천 (2차 - 노트 기반)",
-            "시향 일기 (감정 태깅)",  # 🆕 업데이트
+            "시향 일기 (감정 태깅)",
             "매장 정보",
             "코스 추천",
             "사용자 인증",
@@ -264,8 +296,9 @@ def read_root():
             "🆕 2차 추천 API (/perfumes/recommend-2nd)",
             "🎯 사용자 노트 선호도 기반 정밀 추천",
             "🧮 AI 감정 클러스터 + 노트 매칭 알고리즘",
-            "🎭 AI 감정 태깅 시향일기 (8개 감정 자동 분류)"  # 🆕 추가
-        ]
+            "🎭 AI 감정 태깅 시향일기 (8개 감정 자동 분류)"
+        ],
+        "router_status": "안전한 로딩 적용됨"
     }
 
 
@@ -289,11 +322,12 @@ def health_check():
             "features_available": [
                 "1차 추천",
                 "2차 추천 (노트 기반)",
-                "감정 태깅 시향일기",  # 🆕 추가
+                "감정 태깅 시향일기",
                 "시향 일기",
                 "매장 정보",
                 "사용자 인증"
-            ]
+            ],
+            "loading_method": "safe_loading"
         }
     except Exception as e:
         logger.error(f"Health check failed: {e}")
@@ -337,6 +371,7 @@ def get_server_status():
             emotion_tagging_status["available"] = is_model_available()
         except Exception as e:
             logger.error(f"감정 태깅 모델 상태 확인 실패: {e}")
+            emotion_tagging_status = {"available": False, "error": str(e)}
 
         return {
             "service": "Whiff API",
@@ -345,25 +380,26 @@ def get_server_status():
             "environment": "production" if os.getenv("RENDER") else "development",
             "firebase": firebase_status,
             "smtp": smtp_status,
-            "emotion_tagging": emotion_tagging_status,  # 🆕 추가
+            "emotion_tagging": emotion_tagging_status,
             "features": {
                 "auth": "Firebase Authentication",
                 "database": "SQLite + JSON Files",
                 "ml_model": "TensorFlow (Lazy Loading)",
-                "emotion_tagging": "Keras + TF-IDF Vectorizer",  # 🆕 추가
+                "emotion_tagging": "Keras + TF-IDF Vectorizer",
                 "deployment": "Render.com",
-                "email": "SMTP (Gmail)"
+                "email": "SMTP (Gmail)",
+                "router_loading": "Safe Loading"
             },
             "endpoints": {
                 "perfumes": "향수 정보 및 1차 추천",
                 "perfumes_2nd": "2차 추천 (노트 기반)",
-                "diaries": "시향 일기 (감정 태깅 포함)",  # 🆕 업데이트
+                "diaries": "시향 일기 (감정 태깅 포함)",
                 "stores": "매장 정보",
                 "courses": "시향 코스 추천",
                 "auth": "사용자 인증",
                 "users": "사용자 관리"
             },
-            "ai_models": {  # 🆕 AI 모델 상태 추가
+            "ai_models": {
                 "recommendation_model": {
                     "endpoint": "/perfumes/recommend-cluster",
                     "method": "AI 감정 클러스터 모델",
@@ -372,7 +408,7 @@ def get_server_status():
                 },
                 "emotion_tagging_model": {
                     "endpoint": "/diaries/ (POST) - 자동 적용",
-                    "method": "Keras + TF-IDF",
+                    "method": "Keras + TF-IDF 또는 룰 기반",
                     "input": "시향일기 텍스트",
                     "output": "8개 감정 중 1개 자동 분류",
                     "emotions": ["기쁨", "불안", "당황", "분노", "상처", "슬픔", "우울", "흥분"]
@@ -403,8 +439,9 @@ def get_api_info():
         "description": "AI 기반 향수 추천 + 감정 태깅 시향일기 서비스",
         "documentation_url": "/docs",
         "redoc_url": "/redoc",
+        "router_loading": "안전한 로딩 적용",
 
-        "emotion_tagging_system": {  # 🆕 감정 태깅 시스템 정보 추가
+        "emotion_tagging_system": {
             "title": "🎭 감정 태깅 시스템",
             "description": "시향일기 작성 시 자동으로 8개 감정 중 적절한 태그를 분류",
             "supported_emotions": ["기쁨", "불안", "당황", "분노", "상처", "슬픔", "우울", "흥분"],
@@ -458,7 +495,7 @@ def get_api_info():
         "main_features": [
             "🤖 AI 감정 클러스터 기반 1차 추천",
             "🎯 노트 선호도 기반 2차 정밀 추천",
-            "🎭 AI 감정 태깅 시향 일기 (8개 감정 자동 분류)",  # 🆕 추가
+            "🎭 AI 감정 태깅 시향 일기 (8개 감정 자동 분류)",
             "📝 시향 일기 작성 및 관리",
             "🗺️ 위치 기반 시향 코스 추천",
             "🏪 매장 정보 및 검색",
@@ -470,11 +507,12 @@ def get_api_info():
         "technical_stack": {
             "framework": "FastAPI",
             "ml_framework": "TensorFlow + scikit-learn",
-            "emotion_tagging": "Keras + TF-IDF Vectorizer",  # 🆕 추가
+            "emotion_tagging": "Keras + TF-IDF Vectorizer",
             "authentication": "Firebase Auth",
             "database": "SQLite + JSON Files",
             "deployment": "Render.com",
-            "email": "SMTP (Gmail)"
+            "email": "SMTP (Gmail)",
+            "router_system": "Safe Loading"
         }
     }
 
@@ -488,6 +526,7 @@ if __name__ == "__main__":
 
     logger.info(f"🚀 서버 시작: 포트 {port}")
     logger.info(f"🆕 감정 태깅 + 2차 추천 기능이 포함된 Whiff API v1.3.0")
+    logger.info(f"🔒 안전한 라우터 로딩 시스템 적용")
 
     uvicorn.run(
         "main:app",
