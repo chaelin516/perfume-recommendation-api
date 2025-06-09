@@ -67,21 +67,21 @@ secrets.json
 *.cert
 
 # 🤖 ML 모델 파일들 (Google Drive에서 다운로드되는 대용량 파일들만 제외)
-# 감정 모델 (Google Drive에서 다운로드)
+# 감정 모델만 Google Drive에서 다운로드
 emotion_models/scent_emotion_model_v6.keras
-emotion_models/*.keras
-emotion_models/*.h5
 emotion_models/model_*.keras
 emotion_models/emotion_model_*.keras
 
-# 향수 추천 모델 (Google Drive에서 다운로드)
-models/final_model.keras
-models/*.keras
-models/*.h5
+# ✅ 로컬 파일들은 Git에 포함됨
+# emotion_models/vectorizer.pkl → Git 포함 ✅
+# models/encoder.pkl → Git 포함 ✅
+# models/final_model.keras → Git 포함 ✅
 
-# ✅ 벡터라이저 파일은 포함 (로컬 파일 사용)
-# emotion_models/vectorizer.pkl는 Git에 포함됨
-# models/encoder.pkl는 Git에 포함됨
+# 기타 대용량 모델 파일들만 제외 (실제로 사용하지 않는 것들)
+models/backup_*.keras
+models/old_*.keras
+models/temp_*.keras
+emotion_models/backup_*.keras
 
 # 📊 데이터 파일들 (선택적)
 # 용량이 큰 데이터셋은 제외, 작은 설정 파일은 포함
