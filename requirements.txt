@@ -22,11 +22,11 @@ sqlmodel==0.0.22
 # Firebase 인증 (최신 안정)
 firebase-admin==6.5.0
 
-# 🆕 Google Drive 모델 다운로드 지원
+# Google Drive 다운로드 (🆕 추가)
 gdown==5.1.0
+requests==2.32.3
 
 # 기타 유틸리티
-requests==2.32.3
 Pillow==10.4.0
 python-jose[cryptography]==3.3.0
 
