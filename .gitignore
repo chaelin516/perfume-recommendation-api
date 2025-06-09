@@ -2,23 +2,198 @@
 venv/
 venv_tf/
 .env/
+env/
+ENV/
 
 # 🐍 파이썬 캐시 및 컴파일 파일
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.pdb
+*.pyo
+*.cover
+*.py,cover
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.pytest_cache/
+cover/
 
 # 📂 Jupyter Notebook 체크포인트
 .ipynb_checkpoints/
+*.ipynb
 
 # 🧪 로그 파일
 *.log
+logs/
+log/
 
 # 🍏 macOS 시스템 파일
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 
-# ⚙️ VSCode 설정
+# ⚙️ IDE 설정
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
 
+# 🔐 보안 관련 파일들
 firebase_key.json
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+config.json
+secrets.json
+*.pem
+*.key
+*.crt
+*.cert
+
+# 🤖 ML 모델 파일들 (Google Drive에서 다운로드되는 대용량 파일들만 제외)
+# 감정 모델만 Google Drive에서 다운로드
+emotion_models/scent_emotion_model_v6.keras
+emotion_models/model_*.keras
+emotion_models/emotion_model_*.keras
+
+# ✅ 로컬 파일들은 Git에 포함됨
+# emotion_models/vectorizer.pkl → Git 포함 ✅
+# models/encoder.pkl → Git 포함 ✅
+# models/final_model.keras → Git 포함 ✅
+
+# 기타 대용량 모델 파일들만 제외 (실제로 사용하지 않는 것들)
+models/backup_*.keras
+models/old_*.keras
+models/temp_*.keras
+emotion_models/backup_*.keras
+
+# 📊 데이터 파일들 (선택적)
+# 용량이 큰 데이터셋은 제외, 작은 설정 파일은 포함
+data/large_dataset.csv
+data/training_data/
+data/raw_data/
+*.csv.backup
+*.json.backup
+
+# 📁 임시 파일들
+tmp/
+temp/
+*.tmp
+*.temp
+.cache/
+cache/
+
+# 📦 빌드 및 배포 관련
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+.installed.cfg
+pip-wheel-metadata/
+
+# 🧪 테스트 관련
+.coverage
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+test_results/
+*.test
+test_*.json
+coverage.xml
+*.cover
+.hypothesis/
+
+# 📚 문서 관련
+docs/_build/
+.readthedocs.yml
+site/
+
+# 🌐 웹 관련
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 💾 데이터베이스 파일들
+*.db
+*.sqlite
+*.sqlite3
+# 단, 초기 스키마나 테스트 DB는 포함 가능
+# !test.db
+# !schema.sql
+
+# 🔧 기타 개발 도구들
+.venv
+.pipenv
+Pipfile.lock
+poetry.lock
+.python-version
+.pyenv-version
+
+# 📱 모바일 개발 관련 (혹시나)
+*.apk
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# 🖼️ 미디어 파일들 (용량이 큰 경우만)
+# *.png
+# *.jpg
+# *.jpeg
+# *.gif
+# *.mp4
+# *.mov
+
+# 📋 OS 생성 파일들
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# 🔄 백업 파일들
+*.bak
+*.backup
+*.swp
+*.swo
+*~
+
+# 📨 이메일 관련
+*.eml
+
+# 🎯 Whiff 프로젝트 특화 제외 파일들
+# 개발 중 생성되는 임시 파일들
+recommendation_test_results/
+emotion_analysis_cache/
+model_checkpoints/
+training_logs/
+
+# 사용자 업로드 파일들 (실제 운영 시)
+uploads/
+user_data/
+profile_images/
+
+# API 테스트 결과들
+api_test_results/
+postman_results/
+
+# 성능 측정 결과들
+performance_logs/
+benchmark_results/

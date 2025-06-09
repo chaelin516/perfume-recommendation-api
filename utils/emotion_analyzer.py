@@ -483,62 +483,6 @@ class EmotionAnalyzer:
         """특정 감정의 태그 목록 반환"""
         return self.emotion_to_tags.get(emotion, ["#neutral"])
 
-    def update_emotion_mapping(self, new_mapping: Dict[str, List[str]]):
-        """감정-태그 매핑 업데이트 (모델 업데이트 시 사용)"""
-        logger.info(f"🔄 감정 태그 매핑 업데이트...")
-        old_count = len(self.emotion_to_tags)
-        self.emotion_to_tags.update(new_mapping)
-        new_count = len(self.emotion_to_tags)
-        logger.info(f"✅ 감정 태그 매핑 업데이트 완료: {old_count} → {new_count}개")
-
-    def add_custom_keywords(self, emotion: str, keywords: List[str]):
-        """특정 감정에 커스텀 키워드 추가"""
-        if emotion in self.emotion_keywords:
-            old_count = len(self.emotion_keywords[emotion])
-            self.emotion_keywords[emotion].extend(keywords)
-            # 중복 제거
-            self.emotion_keywords[emotion] = list(set(self.emotion_keywords[emotion]))
-            new_count = len(self.emotion_keywords[emotion])
-            logger.info(f"📝 {emotion} 키워드 업데이트: {old_count} → {new_count}개")
-        else:
-            logger.warning(f"⚠️ 지원하지 않는 감정: {emotion}")
-
-    async def load_model(self, model_path: str = "./models/emotion_model_v2.pkl"):
-        """AI 모델 로딩 (모델 완성 후 구현)"""
-        try:
-            logger.info(f"🤖 감정 분석 모델 로딩 시작...")
-            logger.info(f"  - 모델 경로: {model_path}")
-
-            # TODO: 실제 모델 로딩 로직
-            # 1. 모델 파일 존재 확인
-            if not os.path.exists(model_path):
-                logger.warning(f"⚠️ 모델 파일이 없습니다: {model_path}")
-                self.model_loaded = False
-                return False
-
-            # 2. 모델 로딩 (예시)
-            # import pickle
-            # with open(model_path, 'rb') as f:
-            #     self.model = pickle.load(f)
-
-            # 3. 토크나이저 로딩
-            # tokenizer_path = model_path.replace('.pkl', '_tokenizer.pkl')
-            # with open(tokenizer_path, 'rb') as f:
-            #     self.tokenizer = pickle.load(f)
-
-            # 4. 초기화 검증
-            # test_result = await self._analyze_with_model("테스트 텍스트")
-
-            # 현재는 개발 중이므로 False
-            logger.warning(f"⚠️ 모델이 아직 개발 중입니다 (v{self.model_version})")
-            self.model_loaded = False
-            return False
-
-        except Exception as e:
-            logger.error(f"❌ 모델 로딩 실패: {e}")
-            self.model_loaded = False
-            return False
-
     def get_analysis_stats(self) -> Dict[str, Any]:
         """분석 시스템 상태 정보"""
         success_rate = 0.0
@@ -576,53 +520,6 @@ class EmotionAnalyzer:
                 "last_updated": datetime.now().isoformat()
             }
         }
-
-    def get_performance_report(self) -> Dict[str, Any]:
-        """상세 성능 리포트 생성"""
-        stats = self.get_analysis_stats()
-
-        report = {
-            "report_generated_at": datetime.now().isoformat(),
-            "system_overview": {
-                "status": "operational" if stats["performance"]["success_rate"] > 80 else "degraded",
-                "total_analyses": stats["performance"]["total_analyses"],
-                "success_rate": stats["performance"]["success_rate"],
-                "average_response_time": stats["performance"]["average_response_time"]
-            },
-            "performance_analysis": stats["performance"],
-            "recommendations": []
-        }
-
-        # 성능 개선 권장사항
-        perf = stats["performance"]
-        if perf["success_rate"] < 90:
-            report["recommendations"].append("성공률이 낮습니다. 에러 로그를 확인하세요.")
-
-        if perf["average_response_time"] > 2.0:
-            report["recommendations"].append("응답 시간이 느립니다. 키워드 최적화를 고려하세요.")
-
-        confidence_dist = perf["confidence_distribution"]
-        total_confident = confidence_dist["high"] + confidence_dist["medium"]
-        if total_confident < confidence_dist["low"]:
-            report["recommendations"].append("신뢰도가 낮은 분석이 많습니다. 키워드를 확장하세요.")
-
-        if not self.model_loaded:
-            report["recommendations"].append("AI 모델을 로딩하면 성능이 개선될 수 있습니다.")
-
-        return report
-
-    def reset_performance_stats(self):
-        """성능 통계 리셋"""
-        logger.info("🔄 성능 통계 리셋...")
-        self.analysis_count = 0
-        self.performance_stats = {
-            "total_analyses": 0,
-            "successful_analyses": 0,
-            "average_response_time": 0.0,
-            "method_distribution": {"rule_based": 0, "ai_model": 0},
-            "confidence_distribution": {"high": 0, "medium": 0, "low": 0}
-        }
-        logger.info("✅ 성능 통계 리셋 완료")
 
 
 # 🌟 전역 감정 분석기 인스턴스

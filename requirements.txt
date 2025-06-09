@@ -4,8 +4,13 @@
 numpy==2.0.2
 pandas==2.2.2
 tensorflow==2.18.0
-scikit-learn==1.6.1
+scikit-learn==1.7.0
 h5py==3.12.1
+
+# 🆕 NLP/Transformers packages (감정 태깅 모델용) - 자동 의존성 해결
+transformers==4.52.4
+# tokenizers 버전은 transformers가 자동으로 선택하도록 함
+torch
 
 # FastAPI 및 웹 서버 (최신 안정 버전)
 fastapi==0.115.4
