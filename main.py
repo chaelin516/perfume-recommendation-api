@@ -1,8 +1,9 @@
-# main.py - 감정 태깅 라우터 추가 및 Google Drive 모델 지원 버전
+# main.py - 2차 추천 라우터 추가 및 Google Drive 감정 모델 연동 버전
 import logging
 import sys
 import traceback
 import os
+import asyncio
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -21,8 +22,8 @@ logger = logging.getLogger(__name__)
 # FastAPI 앱 생성
 app = FastAPI(
     title="Whiff API",
-    description="AI 기반 향수 추천, 시향 코스 추천 및 감정 태깅 서비스의 백엔드 API입니다.",
-    version="1.3.0"  # 🆕 감정 태깅 기능 추가로 버전 업데이트
+    description="AI 기반 향수 추천 및 시향 코스 추천 서비스의 백엔드 API입니다.",
+    version="1.3.0"  # Google Drive 감정 모델 연동으로 버전 업데이트
 )
 
 # CORS 설정
@@ -95,7 +96,58 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     )
 
 
-# ✅ 서버 시작 이벤트 (최적화)
+# ✅ 백그라운드 작업 함수들
+async def initialize_emotion_model_async():
+    """백그라운드에서 감정 모델 초기화"""
+    try:
+        logger.info("🤖 백그라운드 감정 모델 초기화 시작...")
+
+        # 감정 분석기 import (지연 로딩)
+        from utils.emotion_analyzer import emotion_analyzer
+        from utils.model_downloader import model_downloader
+
+        # 모델 다운로드 및 로딩 시도
+        logger.info("📦 Google Drive에서 감정 모델 확인 중...")
+        results = model_downloader.ensure_models_available()
+
+        if results.get("emotion_model", False):
+            logger.info("✅ 감정 모델 다운로드 완료, AI 모델 로딩 시도...")
+
+            # AI 모델 초기화
+            ai_loaded = await emotion_analyzer.initialize_ai_model()
+
+            if ai_loaded:
+                logger.info("🎉 감정 태깅 AI 모델 준비 완료!")
+            else:
+                logger.warning("⚠️ AI 모델 로딩 실패 - 키워드 기반으로 동작")
+        else:
+            logger.warning("⚠️ 감정 모델 다운로드 실패 - 키워드 기반으로 동작")
+
+    except Exception as e:
+        logger.error(f"❌ 백그라운드 감정 모델 초기화 실패: {e}")
+        logger.info("📋 키워드 기반 감정 분석으로 폴백")
+
+
+async def download_models_async():
+    """백그라운드에서 모델 다운로드 (빠른 확인용)"""
+    try:
+        from utils.model_downloader import model_downloader
+
+        # 빠른 상태 확인 (다운로드는 실제 사용 시점에)
+        logger.info("🔍 모델 파일 상태 빠른 확인...")
+        status = model_downloader.get_download_status()
+
+        emotion_model = status["models"].get("emotion_model", {})
+        if emotion_model.get("is_valid", False):
+            logger.info("✅ 감정 모델 파일 로컬에 준비됨")
+        else:
+            logger.info("📥 감정 모델 파일 없음 - 첫 사용 시 다운로드 예정")
+
+    except Exception as e:
+        logger.warning(f"⚠️ 모델 상태 확인 중 오류: {e}")
+
+
+# ✅ 서버 시작 이벤트 (최적화된 버전)
 @app.on_event("startup")
 async def startup_event():
     try:
@@ -108,7 +160,7 @@ async def startup_event():
         logger.info(f"📋 기본 설정:")
         logger.info(f"  - 포트: {port}")
         logger.info(f"  - 환경: {environment}")
-        logger.info(f"  - API 버전: 1.3.0 (감정 태깅 기능 포함)")
+        logger.info(f"  - API 버전: 1.3.0 (Google Drive 감정 모델 연동)")
 
         # Firebase 초기화 확인 (빠른 체크)
         try:
@@ -118,20 +170,31 @@ async def startup_event():
         except Exception as e:
             logger.warning(f"⚠️ Firebase 상태 확인 건너뜀: {e}")
 
-        # 🆕 감정 분석기 초기화 확인
+        # 🆕 Google Drive 감정 모델 백그라운드 초기화
         try:
-            from utils.emotion_analyzer import emotion_analyzer
-            stats = emotion_analyzer.get_analysis_stats()
-            logger.info(f"🎭 감정 분석기: {'✅ 사용 가능' if stats['model_loaded'] else '📋 룰 기반'}")
-            logger.info(f"  - 지원 감정: {stats['supported_emotions']}개")
-            logger.info(f"  - 총 키워드: {stats['total_keywords']}개")
-        except Exception as e:
-            logger.warning(f"⚠️ 감정 분석기 상태 확인 건너뜀: {e}")
+            logger.info("🎭 감정 분석 시스템 초기화...")
 
-        # ML 모델은 lazy loading으로 처리 (시작 시 로딩하지 않음)
-        logger.info("🤖 ML 모델: Lazy Loading 설정 완료")
+            # 감정 분석기 기본 초기화 (키워드 시스템)
+            from utils.emotion_analyzer import emotion_analyzer
+            logger.info("✅ 키워드 기반 감정 분석 시스템 준비 완료")
+
+            # AI 모델은 백그라운드에서 로딩 (서버 시작 지연 방지)
+            use_ai_model = os.getenv('USE_EMOTION_AI_MODEL', 'true').lower() == 'true'
+
+            if use_ai_model:
+                logger.info("🤖 AI 감정 모델 백그라운드 초기화 예약...")
+                asyncio.create_task(initialize_emotion_model_async())
+            else:
+                logger.info("🎭 AI 감정 모델 비활성화 (환경변수 설정)")
+
+        except Exception as e:
+            logger.warning(f"⚠️ 감정 분석 시스템 초기화 건너뜀: {e}")
+
+        # ML 향수 추천 모델은 lazy loading으로 처리
+        logger.info("🤖 향수 추천 ML 모델: Lazy Loading 설정 완료")
 
         logger.info("✅ Whiff API 서버가 빠르게 시작되었습니다!")
+        logger.info("🎉 Google Drive 연동 감정 모델 지원!")
 
     except Exception as e:
         logger.error(f"❌ 서버 시작 중 오류: {e}")
@@ -142,16 +205,6 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("🔚 Whiff API 서버가 종료됩니다.")
-
-    # 🆕 감정 분석기 정리
-    try:
-        from utils.emotion_analyzer import emotion_analyzer
-        stats = emotion_analyzer.get_analysis_stats()
-        if stats['performance']['total_analyses'] > 0:
-            logger.info(f"📊 감정 분석 통계: {stats['performance']['total_analyses']}회 분석 완료")
-            logger.info(f"📊 성공률: {stats['performance']['success_rate']}%")
-    except Exception as e:
-        logger.warning(f"⚠️ 감정 분석기 통계 확인 건너뜀: {e}")
 
 
 # 🎯 모든 라우터 등록 (감정 태깅 라우터 포함)
@@ -167,9 +220,11 @@ try:
     from routers.auth_router import router as auth_router
     from routers.recommendation_save_router import router as recommendation_save_router
     from routers.user_router import router as user_router
+
+    # 🆕 2차 추천 라우터
     from routers.recommend_2nd_router import router as recommend_2nd_router
 
-    # 🆕 감정 태깅 라우터 추가
+    # 🆕 감정 태깅 라우터 (Google Drive 연동)
     from routers.emotion_tagging_router import router as emotion_tagging_router
 
     # 라우터 등록 (등록 순서 중요)
@@ -177,15 +232,16 @@ try:
     app.include_router(store_router)  # 매장 정보
     app.include_router(course_router)  # 시향 코스
     app.include_router(recommend_router)  # 1차 추천 (기존)
-    app.include_router(recommend_2nd_router)  # 2차 추천 (노트 기반)
+    app.include_router(recommend_2nd_router)  # 🆕 2차 추천 (노트 기반)
     app.include_router(diary_router)  # 시향 일기
-    app.include_router(emotion_tagging_router)  # 🆕 감정 태깅
+    app.include_router(emotion_tagging_router)  # 🆕 감정 태깅 (Google Drive)
     app.include_router(auth_router)  # 인증
     app.include_router(user_router)  # 사용자 관리
     app.include_router(recommendation_save_router)  # 추천 저장
 
     logger.info("✅ 모든 라우터 등록 완료")
-    logger.info("🆕 감정 태깅 라우터 (/emotions/...) 추가됨")
+    logger.info("🆕 2차 추천 라우터 (/perfumes/recommend-2nd) 추가됨")
+    logger.info("🎭 감정 태깅 라우터 (/emotions/*) 추가됨 (Google Drive 연동)")
 
 except Exception as e:
     logger.error(f"❌ 라우터 등록 중 오류: {e}")
@@ -205,17 +261,18 @@ def read_root():
             "향수 추천 (1차)",
             "향수 추천 (2차 - 노트 기반)",
             "시향 일기",
-            "감정 태깅",  # 🆕 추가됨
+            "감정 태깅 (AI + 키워드 기반)",  # 🆕 추가됨
             "매장 정보",
             "코스 추천",
             "사용자 인증",
             "회원 관리"
         ],
         "new_features": [
-            "🆕 감정 태깅 API (/emotions/analyze)",
-            "🎭 AI 감정 분석 + 룰 기반 폴백",
-            "📊 감정 분석 통계 및 성능 모니터링",
-            "☁️ Google Drive 모델 자동 다운로드 지원"
+            "🆕 2차 추천 API (/perfumes/recommend-2nd)",
+            "🎯 사용자 노트 선호도 기반 정밀 추천",
+            "🧮 AI 감정 클러스터 + 노트 매칭 알고리즘",
+            "🎭 Google Drive 연동 감정 태깅 (/emotions/*)",  # 🆕 추가됨
+            "🤖 1.33GB AI 모델 자동 다운로드 시스템"  # 🆕 추가됨
         ]
     }
 
@@ -241,7 +298,7 @@ def health_check():
                 "1차 추천",
                 "2차 추천 (노트 기반)",
                 "시향 일기",
-                "감정 태깅",  # 🆕
+                "감정 태깅 (Google Drive AI)",  # 🆕
                 "매장 정보",
                 "사용자 인증"
             ]
@@ -259,7 +316,7 @@ def head_health_check():
     return JSONResponse(content={})
 
 
-# ✅ 상태 정보
+# ✅ 상태 정보 (Google Drive 연동 상태 포함)
 @app.get("/status", summary="서버 상태 정보", operation_id="get_server_status")
 def get_server_status():
     try:
@@ -280,13 +337,24 @@ def get_server_status():
         except Exception as e:
             logger.error(f"SMTP 상태 확인 실패: {e}")
 
-        # 🆕 감정 분석기 상태 확인
-        emotion_analyzer_status = None
+        # 🆕 감정 모델 상태 확인
+        emotion_model_status = None
         try:
             from utils.emotion_analyzer import emotion_analyzer
-            emotion_analyzer_status = emotion_analyzer.get_analysis_stats()
+            from utils.model_downloader import model_downloader
+
+            emotion_stats = emotion_analyzer.get_analysis_stats()
+            download_status = model_downloader.get_download_status()
+
+            emotion_model_status = {
+                "ai_model_loaded": emotion_stats["model_loaded"],
+                "use_ai_model": emotion_stats["use_ai_model"],
+                "google_drive_models": download_status["models"],
+                "analysis_count": emotion_stats["performance"]["total_analyses"],
+                "success_rate": emotion_stats["performance"]["success_rate"]
+            }
         except Exception as e:
-            logger.error(f"감정 분석기 상태 확인 실패: {e}")
+            logger.error(f"감정 모델 상태 확인 실패: {e}")
 
         return {
             "service": "Whiff API",
@@ -295,19 +363,19 @@ def get_server_status():
             "environment": "production" if os.getenv("RENDER") else "development",
             "firebase": firebase_status,
             "smtp": smtp_status,
-            "emotion_analyzer": emotion_analyzer_status,  # 🆕
+            "emotion_model": emotion_model_status,  # 🆕 추가
             "features": {
                 "auth": "Firebase Authentication",
                 "database": "SQLite + JSON Files",
                 "ml_model": "TensorFlow (Lazy Loading)",
-                "emotion_analysis": "AI + Rule-based",  # 🆕
+                "emotion_ai": "Google Drive + TensorFlow",  # 🆕 추가
                 "deployment": "Render.com",
                 "email": "SMTP (Gmail)"
             },
             "endpoints": {
                 "perfumes": "향수 정보 및 1차 추천",
-                "perfumes_2nd": "2차 추천 (노트 기반)",
-                "emotions": "🆕 감정 태깅 및 분석",  # 🆕 추가
+                "perfumes_2nd": "🆕 2차 추천 (노트 기반)",
+                "emotions": "🆕 감정 태깅 (Google Drive AI)",  # 🆕 추가
                 "stores": "매장 정보",
                 "courses": "시향 코스 추천",
                 "diaries": "시향 일기",
@@ -328,10 +396,10 @@ def get_server_status():
                     "output": "정밀 점수 기반 추천"
                 },
                 "emotion_tagging": {  # 🆕 추가
-                    "endpoint": "/emotions/analyze",
-                    "method": "AI + 룰 기반 감정 분석",
+                    "endpoint": "/emotions/predict",
+                    "method": "Google Drive AI 모델 + 키워드 기반",
                     "input": "시향 일기 텍스트",
-                    "output": "감정 태그 + 신뢰도"
+                    "output": "감정 + 태그 + 신뢰도"
                 }
             }
         }
@@ -343,14 +411,14 @@ def get_server_status():
         )
 
 
-# ✅ API 문서 정보
+# ✅ API 문서 정보 (Google Drive 연동 포함)
 @app.get("/api-info", summary="API 정보", operation_id="get_api_info")
 def get_api_info():
     """API 기능 및 엔드포인트 정보 제공"""
     return {
         "api_name": "Whiff API",
         "version": "1.3.0",
-        "description": "AI 기반 향수 추천, 시향 코스 추천 및 감정 태깅 서비스",
+        "description": "AI 기반 향수 추천 및 시향 코스 추천 서비스 (Google Drive 감정 모델 연동)",
         "documentation_url": "/docs",
         "redoc_url": "/redoc",
 
@@ -387,11 +455,11 @@ def get_api_info():
             },
             "step_3": {  # 🆕 추가
                 "title": "감정 태깅",
-                "endpoint": "/emotions/analyze",
-                "description": "시향 일기 텍스트 → AI 감정 분석 → 감정 태그 생성",
+                "endpoint": "/emotions/predict",
+                "description": "시향 일기 텍스트 → Google Drive AI 모델 → 감정 + 태그",
                 "input_example": {
                     "text": "이 향수 정말 좋아요! 달콤하고 상큼해서 기분이 좋아져요.",
-                    "use_model": True
+                    "use_ai_model": True
                 }
             }
         },
@@ -399,7 +467,7 @@ def get_api_info():
         "main_features": [
             "🤖 AI 감정 클러스터 기반 1차 추천",
             "🎯 노트 선호도 기반 2차 정밀 추천",
-            "🎭 AI + 룰 기반 감정 태깅",  # 🆕
+            "🎭 Google Drive AI 감정 태깅 (1.33GB 모델)",  # 🆕 추가
             "📝 시향 일기 작성 및 관리",
             "🗺️ 위치 기반 시향 코스 추천",
             "🏪 매장 정보 및 검색",
@@ -411,22 +479,19 @@ def get_api_info():
         "technical_stack": {
             "framework": "FastAPI",
             "ml_framework": "TensorFlow + scikit-learn",
-            "emotion_analysis": "Custom AI + Rule-based",  # 🆕
+            "emotion_ai": "Google Drive + TensorFlow (1.33GB 모델)",  # 🆕 추가
             "authentication": "Firebase Auth",
             "database": "SQLite + JSON Files",
             "deployment": "Render.com",
-            "email": "SMTP (Gmail)",
-            "cloud_storage": "Google Drive (모델 다운로드)"  # 🆕
+            "email": "SMTP (Gmail)"
         },
 
-        "new_in_v1_3_0": [  # 🆕 추가
-            "🎭 감정 태깅 API 추가",
-            "🤖 AI 모델 + 룰 기반 감정 분석",
-            "☁️ Google Drive 모델 자동 다운로드",
-            "📊 감정 분석 성능 모니터링",
-            "🌸 향수 도메인 특화 키워드",
-            "🔄 폴백 메커니즘 강화"
-        ]
+        "google_drive_integration": {  # 🆕 추가
+            "model_size": "1.33GB",
+            "auto_download": "서버 시작 시 자동 확인",
+            "fallback": "키워드 기반 감정 분석",
+            "supported_emotions": ["기쁨", "불안", "당황", "분노", "상처", "슬픔", "우울", "흥분"]
+        }
     }
 
 
@@ -438,7 +503,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
 
     logger.info(f"🚀 서버 시작: 포트 {port}")
-    logger.info(f"🆕 감정 태깅 기능이 포함된 Whiff API v1.3.0")
+    logger.info(f"🆕 Google Drive 감정 모델 연동이 포함된 Whiff API v1.3.0")
 
     uvicorn.run(
         "main:app",
