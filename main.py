@@ -188,100 +188,152 @@ async def shutdown_event():
     logger.info("🔚 Whiff API 서버가 종료됩니다.")
 
 
-# 🎯 라우터 등록 (순서 중요!)
+# main.py - 라우터 등록 개선 버전
+
 def register_routers():
-    """라우터를 안전하게 등록"""
+    """라우터를 안전하게 등록 (각 라우터 독립적으로 처리)"""
     try:
         logger.info("📋 라우터 등록 시작...")
 
-        # 기본 라우터들 (필수)
+        # 📊 등록 성공/실패 추적
+        router_status = {}
+
+        # 1. 기본 라우터들 (필수)
         essential_routers = [
-            ("perfume_router", "기본 향수 정보"),
-            ("store_router", "매장 정보"),
-            ("auth_router", "사용자 인증"),
-            ("user_router", "사용자 관리")
+            ("perfume_router", "기본 향수 정보", "routers.perfume_router"),
+            ("store_router", "매장 정보", "routers.store_router"),
+            ("auth_router", "사용자 인증", "routers.auth_router"),
+            ("user_router", "사용자 관리", "routers.user_router")
         ]
 
-        for router_name, description in essential_routers:
+        for router_name, description, module_path in essential_routers:
             try:
-                if router_name == "perfume_router":
-                    from routers.perfume_router import router as perfume_router
-                    app.include_router(perfume_router)
-                elif router_name == "store_router":
-                    from routers.store_router import router as store_router
-                    app.include_router(store_router)
-                elif router_name == "auth_router":
-                    from routers.auth_router import router as auth_router
-                    app.include_router(auth_router)
-                elif router_name == "user_router":
-                    from routers.user_router import router as user_router
-                    app.include_router(user_router)
-
+                module = __import__(module_path, fromlist=['router'])
+                app.include_router(module.router)
+                router_status[router_name] = "✅ 성공"
                 logger.info(f"  ✅ {description} 라우터 등록 완료")
             except Exception as e:
+                router_status[router_name] = f"❌ 실패: {str(e)}"
                 logger.error(f"  ❌ {description} 라우터 등록 실패: {e}")
 
-        # 추천 시스템 라우터들
+        # 2. 추천 시스템 라우터들
         recommendation_routers = [
-            ("course_router", "시향 코스 추천"),
-            ("recommend_router", "1차 향수 추천"),
-            ("recommend_2nd_router", "2차 향수 추천 (노트 기반)"),
-            ("recommendation_save_router", "추천 결과 저장")
+            ("course_router", "시향 코스 추천", "routers.course_router"),
+            ("recommend_router", "1차 향수 추천", "routers.recommend_router"),
+            ("recommend_2nd_router", "2차 향수 추천", "routers.recommend_2nd_router"),
+            ("recommendation_save_router", "추천 결과 저장", "routers.recommendation_save_router")
         ]
 
-        for router_name, description in recommendation_routers:
+        for router_name, description, module_path in recommendation_routers:
             try:
-                if router_name == "course_router":
-                    from routers.course_router import router as course_router
-                    app.include_router(course_router)
-                elif router_name == "recommend_router":
-                    from routers.recommend_router import router as recommend_router
-                    app.include_router(recommend_router)
-                elif router_name == "recommend_2nd_router":
-                    from routers.recommend_2nd_router import router as recommend_2nd_router
-                    app.include_router(recommend_2nd_router)
-                elif router_name == "recommendation_save_router":
-                    from routers.recommendation_save_router import router as recommendation_save_router
-                    app.include_router(recommendation_save_router)
-
+                module = __import__(module_path, fromlist=['router'])
+                app.include_router(module.router)
+                router_status[router_name] = "✅ 성공"
                 logger.info(f"  ✅ {description} 라우터 등록 완료")
             except Exception as e:
+                router_status[router_name] = f"❌ 실패: {str(e)}"
                 logger.error(f"  ❌ {description} 라우터 등록 실패: {e}")
 
-        # 시향 일기 라우터 (감정 분석 포함)
+        # 3. 🎭 시향 일기 라우터 (특별 처리 - 감정 분석 의존성 있음)
         try:
+            logger.info("🎭 시향 일기 라우터 등록 시도...")
+
+            # diary_router 임포트 시도
             from routers.diary_router import router as diary_router
             app.include_router(diary_router)
-            logger.info(f"  ✅ 시향 일기 (감정 분석 포함) 라우터 등록 완료")
+
+            router_status["diary_router"] = "✅ 성공"
+            logger.info("  ✅ 시향 일기 라우터 등록 완료 (감정 분석 포함)")
+
+            # 감정 분석기 상태 확인
+            try:
+                from routers.diary_router import EMOTION_ANALYZER_AVAILABLE
+                if EMOTION_ANALYZER_AVAILABLE:
+                    logger.info("    ✅ AI 감정 분석기 사용 가능")
+                else:
+                    logger.info("    ⚠️ 기본 감정 분석 모드로 동작")
+            except ImportError:
+                logger.info("    ⚠️ 감정 분석 상태 확인 불가")
+
+        except ImportError as e:
+            router_status["diary_router"] = f"❌ ImportError: {str(e)}"
+            logger.error(f"  ❌ 시향 일기 라우터 임포트 실패: {e}")
+            logger.error("    💡 emotion_analyzer 모듈 관련 문제일 가능성이 높습니다")
+
         except Exception as e:
+            router_status["diary_router"] = f"❌ Exception: {str(e)}"
             logger.error(f"  ❌ 시향 일기 라우터 등록 실패: {e}")
+
+        # 4. 기타 라우터들 (선택적)
+        optional_routers = [
+            ("emotion_router", "감정 분석 전용", "routers.emotion_router"),
+            ("emotion_tagging_router", "감정 태깅", "routers.emotion_tagging_router")
+        ]
+
+        for router_name, description, module_path in optional_routers:
+            try:
+                module = __import__(module_path, fromlist=['router'])
+                app.include_router(module.router)
+                router_status[router_name] = "✅ 성공"
+                logger.info(f"  ✅ {description} 라우터 등록 완료")
+            except ImportError:
+                router_status[router_name] = "⚠️ 모듈 없음 (선택적)"
+                logger.info(f"  ⚠️ {description} 라우터 없음 (선택적 기능)")
+            except Exception as e:
+                router_status[router_name] = f"❌ 실패: {str(e)}"
+                logger.warning(f"  ❌ {description} 라우터 등록 실패: {e}")
 
         logger.info("✅ 라우터 등록 완료")
 
-        # 등록된 라우터 확인
+        # 📊 등록 결과 요약
+        success_count = sum(1 for status in router_status.values() if "✅" in status)
+        total_count = len(router_status)
+
+        logger.info(f"📊 라우터 등록 결과: {success_count}/{total_count} 성공")
+
+        for router_name, status in router_status.items():
+            logger.info(f"  - {router_name}: {status}")
+
+        # 등록된 라우트 확인
         registered_routes = [route.path for route in app.routes if hasattr(route, 'path')]
-        logger.info(f"📊 등록된 라우트 수: {len(registered_routes)}")
+        logger.info(f"📋 등록된 총 라우트 수: {len(registered_routes)}")
 
         # 주요 엔드포인트 확인
         key_endpoints = [
             "/perfumes/recommend-cluster",
             "/perfumes/recommend-2nd",
             "/diaries/",
+            "/diaries/emotion-status",
             "/auth/register",
             "/stores/",
             "/courses/recommend"
         ]
 
+        logger.info("🎯 주요 엔드포인트 확인:")
         for endpoint in key_endpoints:
             if any(endpoint in route for route in registered_routes):
                 logger.info(f"  ✅ {endpoint}")
             else:
                 logger.warning(f"  ❌ {endpoint} - 누락됨")
 
+        # 🎭 시향 일기 API 특별 확인
+        diary_endpoints = [ep for ep in registered_routes if "/diaries" in ep]
+        if diary_endpoints:
+            logger.info(f"🎭 시향 일기 API 엔드포인트 ({len(diary_endpoints)}개):")
+            for endpoint in diary_endpoints[:5]:  # 처음 5개만 표시
+                logger.info(f"  ✅ {endpoint}")
+            if len(diary_endpoints) > 5:
+                logger.info(f"  ... 외 {len(diary_endpoints) - 5}개")
+        else:
+            logger.error("❌ 시향 일기 API 엔드포인트가 전혀 등록되지 않았습니다!")
+            logger.error("💡 diary_router.py의 의존성 문제를 확인해주세요")
+
     except Exception as e:
         logger.error(f"❌ 라우터 등록 중 치명적 오류: {e}")
         logger.error(f"Traceback: {traceback.format_exc()}")
 
+
+# main.py의 기존 register_routers() 함수를 위 코드로 교체
 
 # 라우터 등록 실행
 register_routers()
