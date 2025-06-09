@@ -1,135 +1,95 @@
-# main.py - 라우터 등록 및 감정 모델 연동 수정 완전판
+# main.py - Whiff API Server (API 삭제 반영 버전)
 
-import logging
-import sys
-import traceback
 import os
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
-from fastapi.exceptions import RequestValidationError
+import logging
+import traceback
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
-# ✅ 로깅 설정
+# ─── 로깅 설정 ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-    ]
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("whiff_main")
 
-# FastAPI 앱 생성
+# ─── FastAPI 앱 생성 ──────────────────────────────────────────────────────────────
 app = FastAPI(
     title="Whiff API",
-    description="AI 기반 향수 추천 및 시향 코스 추천 서비스의 백엔드 API입니다.",
-    version="1.3.0",  # 버전 업데이트
+    description="""
+    🌸 **Whiff - 취향 맞춤 향수 추천 서비스**
+
+    고객의 취향에 맞는 향수를 AI 기반으로 추천해주는 서비스입니다.
+
+    ## 🎯 주요 기능
+    - **1차 추천**: AI 감정 클러스터 모델 기반 향수 추천
+    - **2차 추천**: 노트 선호도 기반 정밀 추천  
+    - **시향 일기**: AI 감정 분석 포함 일기 작성
+    - **사용자 인증**: Firebase 기반 회원 관리
+
+    ## 🚀 기술 스택
+    - **Backend**: FastAPI + Python
+    - **AI/ML**: TensorFlow + Custom Emotion Analyzer
+    - **Database**: SQLite + JSON Files
+    - **Authentication**: Firebase
+    - **Deployment**: Render.com
+
+    ## 📋 API 버전 정보
+    - **Version**: 1.3.0
+    - **Environment**: Production
+    - **Last Updated**: 2025-06-10
+    """,
+    version="1.3.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
 
-# CORS 설정
+# ─── CORS 설정 ────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 프로덕션에서는 구체적인 도메인 설정
+    allow_origins=[
+        "http://localhost:3000",  # React 개발 서버
+        "http://localhost:8000",  # FastAPI 개발 서버
+        "https://whiff-api-9nd8.onrender.com",  # 프로덕션 API
+        "*"  # 개발 단계에서는 모든 origin 허용
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
 )
 
 
-# ✅ 전역 예외 핸들러
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    """모든 예외를 잡아서 로깅하고 적절한 응답을 반환"""
-    logger.error(f"Unhandled exception on {request.method} {request.url}")
-    logger.error(f"Exception type: {type(exc).__name__}")
-    logger.error(f"Exception message: {str(exc)}")
-    logger.error(f"Traceback: {traceback.format_exc()}")
-
-    return JSONResponse(
-        status_code=500,
-        content={
-            "message": "서버 내부 오류가 발생했습니다.",
-            "error": str(exc),
-            "path": str(request.url.path),
-            "method": request.method
-        }
-    )
-
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    error_details = []
-    for error in exc.errors():
-        error_details.append({
-            "field": " -> ".join(str(x) for x in error["loc"]),
-            "message": error["msg"],
-            "type": error["type"],
-            "input": error.get("input")
-        })
-
-    logger.error(f"Validation error on {request.method} {request.url}")
-    logger.error(f"Error details: {error_details}")
-
-    return JSONResponse(
-        status_code=422,
-        content={
-            "message": "입력값이 유효하지 않습니다.",
-            "errors": error_details,
-            "path": str(request.url.path)
-        }
-    )
-
-
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
-    logger.error(f"HTTP {exc.status_code} error on {request.method} {request.url}: {exc.detail}")
-
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "message": exc.detail,
-            "status_code": exc.status_code,
-            "path": str(request.url.path)
-        }
-    )
-
-
-# ✅ 서버 시작 이벤트
+# ─── 서버 시작/종료 이벤트 ─────────────────────────────────────────────────────────
 @app.on_event("startup")
 async def startup_event():
+    """서버 시작 시 초기화"""
     try:
         logger.info("🚀 Whiff API 서버 시작 중...")
+        logger.info(f"📍 Environment: {'Production' if os.getenv('RENDER') else 'Development'}")
+        logger.info(f"📍 Port: {os.getenv('PORT', '8000')}")
 
-        # 환경변수 확인
-        port = os.getenv('PORT', '8000')
-        environment = "production" if os.getenv("RENDER") else "development"
-
-        logger.info(f"📋 기본 설정:")
-        logger.info(f"  - 포트: {port}")
-        logger.info(f"  - 환경: {environment}")
-        logger.info(f"  - API 버전: 1.3.0")
-
-        # 🔥 Firebase 초기화 확인
-        firebase_status = {"firebase_available": False}
+        # 📊 Firebase 상태 확인
+        firebase_status = {"firebase_available": False, "error": None}
         try:
             from utils.auth_utils import get_firebase_status
             firebase_status = get_firebase_status()
-            logger.info(f"🔥 Firebase: {'✅ 사용 가능' if firebase_status['firebase_available'] else '❌ 사용 불가'}")
+            logger.info(f"🔥 Firebase 상태: {'✅ 연결됨' if firebase_status['firebase_available'] else '❌ 연결 실패'}")
         except Exception as e:
-            logger.warning(f"⚠️ Firebase 상태 확인 실패: {e}")
+            logger.error(f"Firebase 상태 확인 실패: {e}")
+            firebase_status = {"firebase_available": False, "error": str(e)}
 
-        # 🎭 감정 분석기 초기화 (안전한 방식)
+        # 🎭 감정 분석 시스템 상태 확인 (lazy loading)
         emotion_analyzer_status = {"available": False, "method": "none"}
         try:
-            logger.info("🎭 감정 분석 시스템 초기화...")
-
-            # emotion_analyzer 모듈 임포트 시도
+            logger.info("🎭 감정 분석 시스템 확인 중...")
             try:
-                from utils.emotion_analyzer import emotion_analyzer
-                # 간단한 테스트 수행
-                test_result = await emotion_analyzer.analyze_emotion("테스트 텍스트입니다.", use_model=False)
+                from emotion.emotion_analyzer import EmotionAnalyzer
+                emotion_analyzer = EmotionAnalyzer()
+
+                # 간단한 테스트로 초기화 확인
+                test_result = emotion_analyzer.analyze_emotion("테스트 텍스트", use_model=False)
                 if test_result and test_result.get("success"):
                     emotion_analyzer_status = {
                         "available": True,
@@ -188,20 +148,19 @@ async def shutdown_event():
     logger.info("🔚 Whiff API 서버가 종료됩니다.")
 
 
-# main.py - 라우터 등록 개선 버전
-
+# ─── 라우터 등록 함수 (API 삭제 반영) ────────────────────────────────────────────
 def register_routers():
-    """라우터를 안전하게 등록 (각 라우터 독립적으로 처리)"""
+    """라우터를 안전하게 등록 (삭제된 API 반영)"""
     try:
         logger.info("📋 라우터 등록 시작...")
 
         # 📊 등록 성공/실패 추적
         router_status = {}
 
-        # 1. 기본 라우터들 (필수)
+        # 1. 기본 라우터들 (필수) - store_router 제거됨
         essential_routers = [
             ("perfume_router", "기본 향수 정보", "routers.perfume_router"),
-            ("store_router", "매장 정보", "routers.store_router"),
+            # ("store_router", "매장 정보", "routers.store_router"),  # ✅ 삭제됨
             ("auth_router", "사용자 인증", "routers.auth_router"),
             ("user_router", "사용자 관리", "routers.user_router")
         ]
@@ -216,9 +175,9 @@ def register_routers():
                 router_status[router_name] = f"❌ 실패: {str(e)}"
                 logger.error(f"  ❌ {description} 라우터 등록 실패: {e}")
 
-        # 2. 추천 시스템 라우터들
+        # 2. 추천 시스템 라우터들 - course_router 제거됨
         recommendation_routers = [
-            ("course_router", "시향 코스 추천", "routers.course_router"),
+            # ("course_router", "시향 코스 추천", "routers.course_router"),  # ✅ 삭제됨
             ("recommend_router", "1차 향수 추천", "routers.recommend_router"),
             ("recommend_2nd_router", "2차 향수 추천", "routers.recommend_2nd_router"),
             ("recommendation_save_router", "추천 결과 저장", "routers.recommendation_save_router")
@@ -234,17 +193,19 @@ def register_routers():
                 router_status[router_name] = f"❌ 실패: {str(e)}"
                 logger.error(f"  ❌ {description} 라우터 등록 실패: {e}")
 
-        # 3. 🎭 시향 일기 라우터 (특별 처리 - 감정 분석 의존성 있음)
+        # 3. 🎭 시향 일기 라우터 (특별 처리)
+        # ✅ 옵션 1: 전체 diary_router 유지 (개별 API만 삭제)
         try:
             logger.info("🎭 시향 일기 라우터 등록 시도...")
 
-            # diary_router 임포트 시도
             from routers.diary_router import router as diary_router
             app.include_router(diary_router)
 
             router_status["diary_router"] = "✅ 성공"
-            logger.info("  ✅ 시향 일기 라우터 등록 완료 ")
-
+            logger.info("  ✅ 시향 일기 라우터 등록 완료")
+            logger.info("  📝 주의: diary_router.py에서 개별 API 함수 삭제 필요:")
+            logger.info("    - get_diary_detail() 함수 삭제 (/diaries/{diary_id})")
+            logger.info("    - get_emotion_stats() 함수 삭제 (/diaries/stats/emotions)")
 
         except ImportError as e:
             router_status["diary_router"] = f"❌ ImportError: {str(e)}"
@@ -254,6 +215,10 @@ def register_routers():
         except Exception as e:
             router_status["diary_router"] = f"❌ Exception: {str(e)}"
             logger.error(f"  ❌ 시향 일기 라우터 등록 실패: {e}")
+
+        # ✅ 옵션 2: 전체 diary_router 비활성화 (아래 주석 해제 시 사용)
+        # router_status["diary_router"] = "⚠️ 수동 비활성화"
+        # logger.info("  ⚠️ 시향 일기 라우터 수동 비활성화됨")
 
         # 4. 기타 라우터들 (선택적)
         optional_routers = [
@@ -294,8 +259,7 @@ def register_routers():
             "/perfumes/recommend-cluster",
             "/perfumes/recommend-2nd",
             "/diaries/",
-            "/auth/register",
-            "/stores/"
+            "/auth/register"
         ]
 
         logger.info("🎯 주요 엔드포인트 확인:")
@@ -305,30 +269,49 @@ def register_routers():
             else:
                 logger.warning(f"  ❌ {endpoint} - 누락됨")
 
+        # 🗑️ 삭제된 엔드포인트 확인
+        deleted_endpoints = [
+            "/courses/recommend",
+            "/stores/",
+            "/stores/{brand}"
+        ]
+
+        logger.info("🗑️ 삭제된 엔드포인트 확인:")
+        for endpoint in deleted_endpoints:
+            if any(endpoint in route for route in registered_routes):
+                logger.warning(f"  ⚠️ {endpoint} - 아직 존재함 (추가 삭제 필요)")
+            else:
+                logger.info(f"  ✅ {endpoint} - 성공적으로 삭제됨")
+
         # 🎭 시향 일기 API 특별 확인
         diary_endpoints = [ep for ep in registered_routes if "/diaries" in ep]
         if diary_endpoints:
             logger.info(f"🎭 시향 일기 API 엔드포인트 ({len(diary_endpoints)}개):")
             for endpoint in diary_endpoints[:5]:  # 처음 5개만 표시
-                logger.info(f"  ✅ {endpoint}")
+                logger.info(f"  📝 {endpoint}")
             if len(diary_endpoints) > 5:
                 logger.info(f"  ... 외 {len(diary_endpoints) - 5}개")
+
+            # 삭제되어야 할 diary 엔드포인트 확인
+            should_be_deleted = [ep for ep in diary_endpoints
+                                 if "/{diary_id}" in ep or "/stats/emotions" in ep]
+            if should_be_deleted:
+                logger.warning("  ⚠️ 다음 diary 엔드포인트들이 아직 존재합니다:")
+                for ep in should_be_deleted:
+                    logger.warning(f"    🗑️ {ep} - diary_router.py에서 수동 삭제 필요")
         else:
-            logger.error("❌ 시향 일기 API 엔드포인트가 전혀 등록되지 않았습니다!")
-            logger.error("💡 diary_router.py의 의존성 문제를 확인해주세요")
+            logger.info("🎭 시향 일기 API 엔드포인트가 등록되지 않음")
 
     except Exception as e:
         logger.error(f"❌ 라우터 등록 중 치명적 오류: {e}")
         logger.error(f"Traceback: {traceback.format_exc()}")
 
 
-# main.py의 기존 register_routers() 함수를 위 코드로 교체
-
 # 라우터 등록 실행
 register_routers()
 
 
-# ✅ 루트 엔드포인트
+# ─── 기본 엔드포인트들 ────────────────────────────────────────────────────────────
 @app.get("/", summary="루트", operation_id="get_root")
 def read_root():
     return {
@@ -341,10 +324,15 @@ def read_root():
             "향수 추천 (1차 - AI 감정 클러스터)",
             "향수 추천 (2차 - 노트 기반 정밀 추천)",
             "시향 일기 (AI 감정 분석 포함)",
-            "매장 정보 및 위치 기반 검색",
-            "코스 추천",
             "사용자 인증 (Firebase)",
             "회원 관리 (가입/탈퇴)"
+        ],
+        "deleted_apis": [
+            "❌ /courses/recommend (시향 코스 추천)",
+            "❌ /stores/ (전체 매장 목록)",
+            "❌ /stores/{brand} (브랜드별 매장)",
+            "❌ /diaries/{diary_id} (특정 일기 조회)",
+            "❌ /diaries/stats/emotions (감정 통계)"
         ],
         "new_features_v1_3": [
             "🎭 AI 감정 분석 자동 태깅",
@@ -362,7 +350,6 @@ def head_root():
     return JSONResponse(content={})
 
 
-# ✅ 헬스 체크
 @app.get("/health", summary="헬스 체크", operation_id="get_health_check")
 def health_check():
     try:
@@ -377,9 +364,14 @@ def health_check():
                 "1차 추천 (AI 감정 클러스터)",
                 "2차 추천 (노트 기반 정밀)",
                 "시향 일기 (AI 감정 분석)",
-                "매장 정보",
                 "사용자 인증",
                 "실시간 통계"
+            ],
+            "deleted_features": [
+                "시향 코스 추천",
+                "매장 정보 조회",
+                "특정 일기 상세 조회",
+                "감정 통계 조회"
             ]
         }
     except Exception as e:
@@ -395,7 +387,6 @@ def head_health_check():
     return JSONResponse(content={})
 
 
-# ✅ 상태 정보
 @app.get("/status", summary="서버 상태 정보", operation_id="get_server_status")
 def get_server_status():
     try:
@@ -431,15 +422,19 @@ def get_server_status():
                 "deployment": "Render.com",
                 "email": "SMTP (Gmail)"
             },
-            "endpoints": {
+            "active_endpoints": {
                 "perfumes": "향수 정보 및 1차 추천",
                 "perfumes_2nd": "2차 추천 (노트 기반)",
                 "perfumes_cluster": "클러스터 기반 추천",
-                "diaries": "시향 일기 (감정 분석 포함)",
-                "stores": "매장 정보",
-                "courses": "시향 코스 추천",
+                "diaries": "시향 일기 (일부 기능)",
                 "auth": "사용자 인증",
                 "users": "사용자 관리"
+            },
+            "deleted_endpoints": {
+                "courses": "시향 코스 추천 (완전 삭제)",
+                "stores": "매장 정보 (완전 삭제)",
+                "diary_detail": "특정 일기 조회 (개별 삭제)",
+                "emotion_stats": "감정 통계 (개별 삭제)"
             },
             "recommendation_system": {
                 "primary_recommendation": {
@@ -450,25 +445,13 @@ def get_server_status():
                 },
                 "secondary_recommendation": {
                     "endpoint": "/perfumes/recommend-2nd",
-                    "method": "노트 매칭 + 감정 가중치",
-                    "input": "노트 선호도 + 감정 확률 + 선택 인덱스",
-                    "output": "정밀 점수 기반 추천"
-                }
-            },
-            "emotion_analysis_system": {
-                "auto_tagging": {
-                    "endpoint": "/diaries/",
-                    "method": "AI + 룰 기반 하이브리드",
-                    "input": "시향 일기 텍스트",
-                    "output": "감정 태그 + 신뢰도"
-                },
-                "statistics": {
-                    "endpoint": "/diaries/emotion-statistics",
-                    "method": "실시간 통계 분석",
-                    "features": ["감정 분포", "신뢰도 추적", "트렌드 분석"]
+                    "method": "노트 기반 정밀 매칭",
+                    "input": "노트 선호도 + 1차 추천 결과",
+                    "output": "정밀 점수 기반 향수 순위"
                 }
             }
         }
+
     except Exception as e:
         logger.error(f"Status check failed: {e}")
         return JSONResponse(
@@ -477,95 +460,23 @@ def get_server_status():
         )
 
 
-# ✅ API 문서 정보
-@app.get("/api-info", summary="API 정보", operation_id="get_api_info")
-def get_api_info():
-    """API 기능 및 엔드포인트 정보 제공"""
-    return {
-        "api_name": "Whiff API",
-        "version": "1.3.0",
-        "description": "AI 기반 향수 추천 및 시향 코스 추천 서비스",
-        "documentation_url": "/docs",
-        "redoc_url": "/redoc",
-
-        "recommendation_flow": {
-            "step_1": {
-                "title": "1차 추천",
-                "endpoint": "/perfumes/recommend-cluster",
-                "description": "사용자 선호도 → AI 감정 클러스터 → 향수 인덱스 목록",
-                "input_example": {
-                    "gender": "women",
-                    "season_tags": "spring",
-                    "time_tags": "day",
-                    "desired_impression": "confident, fresh",
-                    "activity": "casual",
-                    "weather": "hot"
-                }
-            },
-            "step_2": {
-                "title": "2차 추천 (정밀)",
-                "endpoint": "/perfumes/recommend-2nd",
-                "description": "노트 선호도 + 1차 결과 → 정밀 점수 계산 → 최종 추천",
-                "input_example": {
-                    "user_preferences": {
-                        "gender": "women",
-                        "season_tags": "spring",
-                        "time_tags": "day",
-                        "desired_impression": "confident, fresh",
-                        "activity": "casual",
-                        "weather": "hot"
-                    },
-                    "user_note_scores": {
-                        "jasmine": 5,
-                        "rose": 4,
-                        "amber": 3,
-                        "musk": 0,
-                        "citrus": 2,
-                        "vanilla": 1
-                    }
-                }
-            }
-        },
-
-        "main_features": [
-            "🤖 AI 감정 클러스터 기반 1차 추천",
-            "🎯 노트 선호도 기반 2차 정밀 추천",
-            "🎭 AI 자동 감정 태깅 (시향 일기)",
-            "📊 실시간 감정 통계 및 트렌드 분석",
-            "🗺️ 위치 기반 시향 코스 추천",
-            "🏪 매장 정보 및 검색",
-            "🔐 Firebase 인증 시스템",
-            "📧 이메일 발송 기능",
-            "👥 사용자 관리 (회원가입/탈퇴)"
-        ],
-
-        "technical_stack": {
-            "framework": "FastAPI",
-            "ml_framework": "TensorFlow + scikit-learn",
-            "emotion_ai": "Custom Emotion Analyzer",
-            "authentication": "Firebase Auth",
-            "database": "SQLite + JSON Files",
-            "deployment": "Render.com",
-            "email": "SMTP (Gmail)"
-        }
-    }
+@app.head("/status", operation_id="head_server_status")
+def head_server_status():
+    return JSONResponse(content={})
 
 
-# ✅ Render.com을 위한 메인 실행 부분
+# ─── 개발 환경에서만 실행 ──────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
 
-    # Render.com에서 제공하는 PORT 환경변수 사용
     port = int(os.getenv("PORT", 8000))
-
-    logger.info(f"🚀 서버 시작: 포트 {port}")
-    logger.info(f"🎭 감정 분석 포함 Whiff API v1.3.0")
+    logger.info(f"🚀 개발 서버 시작: http://localhost:{port}")
+    logger.info("📚 API 문서: http://localhost:{port}/docs")
 
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=port,
-        reload=False,
-        access_log=True,
+        reload=True,
         log_level="info"
     )

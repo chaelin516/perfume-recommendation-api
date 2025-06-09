@@ -231,5 +231,354 @@
     ],
     "emotion_analysis_status": "completed",
     "analysis_method": "rule_based"
+  },
+  {
+    "id": "4f4e9626-4695-49b8-bf9d-b7bfa1623811",
+    "user_id": "string",
+    "user_name": "익명 사용자",
+    "user_profile_image": "",
+    "perfume_id": "perfume_string",
+    "perfume_name": "string",
+    "brand": "Unknown Brand",
+    "content": "string",
+    "tags": [
+      "#neutral"
+    ],
+    "likes": 0,
+    "comments": 0,
+    "is_public": true,
+    "created_at": "2025-06-10T08:13:27.179755",
+    "updated_at": "2025-06-10T08:13:27.179755",
+    "emotion_analysis": {
+      "success": true,
+      "primary_emotion": "중립",
+      "confidence": 0.3,
+      "emotion_tags": [
+        "#neutral"
+      ],
+      "analysis_method": "rule_based",
+      "emotion_scores": {},
+      "context_detected": {
+        "계절": null,
+        "시간": null,
+        "상황": null
+      },
+      "perfume_type": "기타",
+      "matched_keywords_summary": {}
+    },
+    "primary_emotion": "중립",
+    "emotion_confidence": 0.3,
+    "emotion_tags_auto": [
+      "#neutral"
+    ],
+    "emotion_analysis_status": "completed",
+    "analysis_method": "rule_based"
+  },
+  {
+    "id": "d932defc-226a-4590-9771-2c2e2a5df9a7",
+    "user_id": "john_doe",
+    "user_name": "익명 사용자",
+    "user_profile_image": "",
+    "perfume_id": "perfume_chanel_no.5",
+    "perfume_name": "Chanel No.5",
+    "brand": "Unknown Brand",
+    "content": "오늘은 봄바람이 느껴지는 향수와 산책했어요.",
+    "tags": [
+      "#nostalgic",
+      "#memory",
+      "spring",
+      "calm"
+    ],
+    "likes": 0,
+    "comments": 0,
+    "is_public": false,
+    "created_at": "2025-06-10T08:13:29.559179",
+    "updated_at": "2025-06-10T08:13:29.559179",
+    "emotion_analysis": {
+      "success": true,
+      "primary_emotion": "그리움",
+      "confidence": 0.7,
+      "emotion_tags": [
+        "#nostalgic",
+        "#memory"
+      ],
+      "analysis_method": "rule_based",
+      "emotion_scores": {
+        "그리움": 0.7
+      },
+      "context_detected": {
+        "계절": "봄",
+        "시간": null,
+        "상황": null
+      },
+      "perfume_type": "기타",
+      "matched_keywords_summary": {
+        "그리움": [
+          "향수"
+        ]
+      }
+    },
+    "primary_emotion": "그리움",
+    "emotion_confidence": 0.7,
+    "emotion_tags_auto": [
+      "#nostalgic",
+      "#memory"
+    ],
+    "emotion_analysis_status": "completed",
+    "analysis_method": "rule_based"
+  },
+  {
+    "id": "54ae1591-75d3-4fe7-97a4-b86e5a6694ba",
+    "user_id": "string",
+    "user_name": "익명 사용자",
+    "user_profile_image": "",
+    "perfume_id": "perfume_string",
+    "perfume_name": "string",
+    "brand": "Unknown Brand",
+    "content": "string",
+    "tags": [
+      "#neutral"
+    ],
+    "likes": 0,
+    "comments": 0,
+    "is_public": true,
+    "created_at": "2025-06-10T08:14:36.018574",
+    "updated_at": "2025-06-10T08:14:36.018574",
+    "emotion_analysis": {
+      "success": true,
+      "primary_emotion": "중립",
+      "confidence": 0.3,
+      "emotion_tags": [
+        "#neutral"
+      ],
+      "analysis_method": "rule_based",
+      "emotion_scores": {},
+      "context_detected": {
+        "계절": null,
+        "시간": null,
+        "상황": null
+      },
+      "perfume_type": "기타",
+      "matched_keywords_summary": {}
+    },
+    "primary_emotion": "중립",
+    "emotion_confidence": 0.3,
+    "emotion_tags_auto": [
+      "#neutral"
+    ],
+    "emotion_analysis_status": "completed",
+    "analysis_method": "rule_based"
+  },
+  {
+    "id": "6d660f35-f4ae-49a6-8601-914edd098860",
+    "user_id": "john_doe",
+    "user_name": "익명 사용자",
+    "user_profile_image": "",
+    "perfume_id": "perfume_chanel_no.5",
+    "perfume_name": "Chanel No.5",
+    "brand": "Unknown Brand",
+    "content": "오늘은 봄바람이 느껴지는 향수와 산책했어요.",
+    "tags": [
+      "calm",
+      "spring",
+      "#nostalgic",
+      "#memory"
+    ],
+    "likes": 0,
+    "comments": 0,
+    "is_public": false,
+    "created_at": "2025-06-10T08:32:01.284023",
+    "updated_at": "2025-06-10T08:32:01.284023",
+    "emotion_analysis": {
+      "success": true,
+      "primary_emotion": "그리움",
+      "confidence": 0.7,
+      "emotion_tags": [
+        "#nostalgic",
+        "#memory"
+      ],
+      "analysis_method": "rule_based",
+      "emotion_scores": {
+        "그리움": 0.7
+      },
+      "context_detected": {
+        "계절": "봄",
+        "시간": null,
+        "상황": null
+      },
+      "perfume_type": "기타",
+      "matched_keywords_summary": {
+        "그리움": [
+          "향수"
+        ]
+      }
+    },
+    "primary_emotion": "그리움",
+    "emotion_confidence": 0.7,
+    "emotion_tags_auto": [
+      "#nostalgic",
+      "#memory"
+    ],
+    "emotion_analysis_status": "completed",
+    "analysis_method": "rule_based"
+  },
+  {
+    "id": "f26e4c27-47fa-43da-8ec7-d9dd747e5999",
+    "user_id": "john_doe",
+    "user_name": "익명 사용자",
+    "user_profile_image": "",
+    "perfume_id": "perfume_chanel_no.5",
+    "perfume_name": "Chanel No.5",
+    "brand": "Unknown Brand",
+    "content": "오늘은 봄바람이 느껴지는 향수와 산책했어요.",
+    "tags": [
+      "#nostalgic",
+      "#memory",
+      "spring",
+      "calm"
+    ],
+    "likes": 0,
+    "comments": 0,
+    "is_public": false,
+    "created_at": "2025-06-10T08:40:41.023016",
+    "updated_at": "2025-06-10T08:40:41.023016",
+    "emotion_analysis": {
+      "success": true,
+      "primary_emotion": "그리움",
+      "confidence": 0.7,
+      "emotion_tags": [
+        "#nostalgic",
+        "#memory"
+      ],
+      "analysis_method": "rule_based",
+      "emotion_scores": {
+        "그리움": 0.7
+      },
+      "context_detected": {
+        "계절": "봄",
+        "시간": null,
+        "상황": null
+      },
+      "perfume_type": "기타",
+      "matched_keywords_summary": {
+        "그리움": [
+          "향수"
+        ]
+      }
+    },
+    "primary_emotion": "그리움",
+    "emotion_confidence": 0.7,
+    "emotion_tags_auto": [
+      "#nostalgic",
+      "#memory"
+    ],
+    "emotion_analysis_status": "completed",
+    "analysis_method": "rule_based"
+  },
+  {
+    "id": "101c7c4e-4547-4898-9eb4-8e558e66f0a3",
+    "user_id": "john_doe",
+    "user_name": "john_doe",
+    "user_profile_image": "",
+    "perfume_id": "perfume_chanel_no.5",
+    "perfume_name": "Chanel No.5",
+    "brand": "Unknown Brand",
+    "content": "오늘은 봄바람이 느껴지는 향수와 산책했어요.",
+    "tags": [
+      "#nostalgic",
+      "#memory",
+      "calm",
+      "spring"
+    ],
+    "likes": 0,
+    "comments": 0,
+    "is_public": false,
+    "created_at": "2025-06-10T08:43:15.054336",
+    "updated_at": "2025-06-10T08:43:15.054336",
+    "emotion_analysis": {
+      "success": true,
+      "primary_emotion": "그리움",
+      "confidence": 0.7,
+      "emotion_tags": [
+        "#nostalgic",
+        "#memory"
+      ],
+      "analysis_method": "rule_based",
+      "emotion_scores": {
+        "그리움": 0.7
+      },
+      "context_detected": {
+        "계절": "봄",
+        "시간": null,
+        "상황": null
+      },
+      "perfume_type": "기타",
+      "matched_keywords_summary": {
+        "그리움": [
+          "향수"
+        ]
+      }
+    },
+    "primary_emotion": "그리움",
+    "emotion_confidence": 0.7,
+    "emotion_tags_auto": [
+      "#nostalgic",
+      "#memory"
+    ],
+    "emotion_analysis_status": "completed",
+    "analysis_method": "rule_based"
+  },
+  {
+    "id": "31f87f63-f265-4a64-bf13-32d67b328e7b",
+    "user_id": "john_doe_test",
+    "user_name": "john_doe_test",
+    "user_profile_image": "",
+    "perfume_id": "perfume_chanel_no.5",
+    "perfume_name": "Chanel No.5",
+    "brand": "Unknown Brand",
+    "content": "오늘은 봄바람이 느껴지는 향수와 산책했어요.",
+    "tags": [
+      "#nostalgic",
+      "#memory",
+      "calm",
+      "spring"
+    ],
+    "likes": 0,
+    "comments": 0,
+    "is_public": false,
+    "created_at": "2025-06-10T08:43:37.182383",
+    "updated_at": "2025-06-10T08:43:37.182383",
+    "emotion_analysis": {
+      "success": true,
+      "primary_emotion": "그리움",
+      "confidence": 0.7,
+      "emotion_tags": [
+        "#nostalgic",
+        "#memory"
+      ],
+      "analysis_method": "rule_based",
+      "emotion_scores": {
+        "그리움": 0.7
+      },
+      "context_detected": {
+        "계절": "봄",
+        "시간": null,
+        "상황": null
+      },
+      "perfume_type": "기타",
+      "matched_keywords_summary": {
+        "그리움": [
+          "향수"
+        ]
+      }
+    },
+    "primary_emotion": "그리움",
+    "emotion_confidence": 0.7,
+    "emotion_tags_auto": [
+      "#nostalgic",
+      "#memory"
+    ],
+    "emotion_analysis_status": "completed",
+    "analysis_method": "rule_based"
   }
 ]

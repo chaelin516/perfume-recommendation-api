@@ -1,6 +1,6 @@
 # routers/diary_router.py - 룰 기반 감정분석 시스템 (토큰 인증 제거)
 
-from fastapi import APIRouter, Query, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Query, HTTPException, BackgroundTasks, Body
 from fastapi.responses import JSONResponse
 from schemas.diary import DiaryCreateRequest, DiaryResponse
 from schemas.common import BaseResponse
@@ -335,8 +335,17 @@ def get_default_user():
 
 @router.post("/", summary="시향 일기 작성")
 async def write_diary(
-        entry: DiaryCreateRequest,
-        background_tasks: BackgroundTasks
+        background_tasks: BackgroundTasks,
+        entry: DiaryCreateRequest = Body(
+            ...,
+            example={
+                "user_id": "john_doe",
+                "perfume_name": "Chanel No.5",
+                "content": "오늘은 봄바람이 느껴지는 향수와 산책했어요.",
+                "is_public": False,
+                "emotion_tags": ["calm", "spring"]
+            }
+        )
 ):
     """
     시향 일기 작성 (토큰 인증 없음)
@@ -348,10 +357,12 @@ async def write_diary(
         # 기본 사용자 정보 설정 (토큰 없이 사용)
         user = get_default_user()
 
-        # user_id가 요청에 있으면 사용, 없으면 기본값 사용
-        user_id = getattr(entry, 'user_id', 'anonymous_user')
-        if hasattr(entry, 'user_id') and entry.user_id:
-            user_id = entry.user_id
+        # user_id 직접 사용 (간단하게)
+        user_id = entry.user_id if entry.user_id else "anonymous_user"
+
+        # 디버깅을 위한 로그
+        logger.info(f"🔍 entry.user_id: {entry.user_id}")
+        logger.info(f"🔍 최종 user_id: {user_id}")
 
         now = datetime.now().isoformat()
         diary_id = str(uuid.uuid4())
@@ -380,7 +391,7 @@ async def write_diary(
         diary = {
             "id": diary_id,
             "user_id": user_id,
-            "user_name": user.get("name", "익명 사용자"),
+            "user_name": user_id,  # user_id를 user_name으로 직접 사용
             "user_profile_image": user.get("picture", ""),
             "perfume_id": f"perfume_{entry.perfume_name.lower().replace(' ', '_')}",
             "perfume_name": entry.perfume_name,
@@ -498,61 +509,3 @@ async def get_diary_list(
             content={"message": f"서버 오류: {str(e)}"}
         )
 
-
-@router.get("/{diary_id}", summary="특정 시향 일기 조회")
-async def get_diary_detail(diary_id: str):
-    """특정 시향 일기의 상세 정보를 조회합니다."""
-    try:
-        diary = next((d for d in diary_data if d.get("id") == diary_id), None)
-
-        if not diary:
-            raise HTTPException(status_code=404, detail="시향 일기를 찾을 수 없습니다.")
-
-        return BaseResponse(
-            message="시향 일기 조회 성공",
-            result=diary
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ 일기 상세 조회 오류: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"message": f"서버 오류: {str(e)}"}
-        )
-
-
-@router.get("/stats/emotions", summary="감정 통계")
-async def get_emotion_stats():
-    """시향 일기의 감정 분석 통계를 반환합니다."""
-    try:
-        emotion_counts = Counter()
-        total_diaries = len(diary_data)
-
-        for diary in diary_data:
-            primary_emotion = diary.get("primary_emotion", "중립")
-            emotion_counts[primary_emotion] += 1
-
-        emotion_stats = {}
-        for emotion, count in emotion_counts.items():
-            emotion_stats[emotion] = {
-                "count": count,
-                "percentage": round((count / total_diaries) * 100, 2) if total_diaries > 0 else 0
-            }
-
-        return BaseResponse(
-            message="감정 통계 조회 성공",
-            result={
-                "total_diaries": total_diaries,
-                "emotion_distribution": emotion_stats,
-                "most_common_emotions": emotion_counts.most_common(5)
-            }
-        )
-
-    except Exception as e:
-        logger.error(f"❌ 감정 통계 조회 오류: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"message": f"서버 오류: {str(e)}"}
-        )
