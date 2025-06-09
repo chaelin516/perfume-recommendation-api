@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Whiff API",
     description="AI 기반 향수 추천, 시향 코스 추천 및 감정 태깅 서비스의 백엔드 API입니다.",
-    version="1.3.0"  # 🆕 감정 태깅 및 Google Drive 모델 지원 추가
+    version="1.3.0"  # 🆕 감정 태깅 기능 추가로 버전 업데이트
 )
 
 # CORS 설정
@@ -108,7 +108,7 @@ async def startup_event():
         logger.info(f"📋 기본 설정:")
         logger.info(f"  - 포트: {port}")
         logger.info(f"  - 환경: {environment}")
-        logger.info(f"  - API 버전: 1.3.0 (감정 태깅 및 Google Drive 모델 지원)")
+        logger.info(f"  - API 버전: 1.3.0 (감정 태깅 기능 포함)")
 
         # Firebase 초기화 확인 (빠른 체크)
         try:
@@ -122,23 +122,14 @@ async def startup_event():
         try:
             from utils.emotion_analyzer import emotion_analyzer
             stats = emotion_analyzer.get_analysis_stats()
-            logger.info(f"🎭 감정 분석기: {'✅ 준비 완료' if stats['model_loaded'] else '📋 룰 기반 준비'}")
+            logger.info(f"🎭 감정 분석기: {'✅ 사용 가능' if stats['model_loaded'] else '📋 룰 기반'}")
             logger.info(f"  - 지원 감정: {stats['supported_emotions']}개")
-            logger.info(f"  - 분석 방법: {stats['analysis_methods']}")
+            logger.info(f"  - 총 키워드: {stats['total_keywords']}개")
         except Exception as e:
             logger.warning(f"⚠️ 감정 분석기 상태 확인 건너뜀: {e}")
 
         # ML 모델은 lazy loading으로 처리 (시작 시 로딩하지 않음)
         logger.info("🤖 ML 모델: Lazy Loading 설정 완료")
-
-        # 🆕 Google Drive 모델 확인
-        try:
-            from utils.emotion_analyzer import emotion_analyzer
-            if hasattr(emotion_analyzer, 'check_google_drive_model'):
-                gdrive_status = emotion_analyzer.check_google_drive_model()
-                logger.info(f"☁️ Google Drive 모델: {'✅ 사용 가능' if gdrive_status else '📋 로컬 모델 사용'}")
-        except Exception as e:
-            logger.warning(f"⚠️ Google Drive 모델 확인 건너뜀: {e}")
 
         logger.info("✅ Whiff API 서버가 빠르게 시작되었습니다!")
 
@@ -151,6 +142,16 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("🔚 Whiff API 서버가 종료됩니다.")
+
+    # 🆕 감정 분석기 정리
+    try:
+        from utils.emotion_analyzer import emotion_analyzer
+        stats = emotion_analyzer.get_analysis_stats()
+        if stats['performance']['total_analyses'] > 0:
+            logger.info(f"📊 감정 분석 통계: {stats['performance']['total_analyses']}회 분석 완료")
+            logger.info(f"📊 성공률: {stats['performance']['success_rate']}%")
+    except Exception as e:
+        logger.warning(f"⚠️ 감정 분석기 통계 확인 건너뜀: {e}")
 
 
 # 🎯 모든 라우터 등록 (감정 태깅 라우터 포함)
@@ -177,14 +178,14 @@ try:
     app.include_router(course_router)  # 시향 코스
     app.include_router(recommend_router)  # 1차 추천 (기존)
     app.include_router(recommend_2nd_router)  # 2차 추천 (노트 기반)
-    app.include_router(emotion_tagging_router)  # 🆕 감정 태깅
     app.include_router(diary_router)  # 시향 일기
+    app.include_router(emotion_tagging_router)  # 🆕 감정 태깅
     app.include_router(auth_router)  # 인증
     app.include_router(user_router)  # 사용자 관리
     app.include_router(recommendation_save_router)  # 추천 저장
 
     logger.info("✅ 모든 라우터 등록 완료")
-    logger.info("🆕 감정 태깅 라우터 (/emotions) 추가됨")
+    logger.info("🆕 감정 태깅 라우터 (/emotions/...) 추가됨")
 
 except Exception as e:
     logger.error(f"❌ 라우터 등록 중 오류: {e}")
@@ -203,18 +204,18 @@ def read_root():
         "features": [
             "향수 추천 (1차)",
             "향수 추천 (2차 - 노트 기반)",
-            "감정 태깅 (🆕)",  # 새로 추가
             "시향 일기",
+            "감정 태깅",  # 🆕 추가됨
             "매장 정보",
             "코스 추천",
             "사용자 인증",
             "회원 관리"
         ],
         "new_features": [
-            "🆕 감정 태깅 API (/emotions)",
-            "🎭 AI 기반 텍스트 감정 분석",
-            "☁️ Google Drive 모델 지원",
-            "📊 감정 분석 성능 모니터링"
+            "🆕 감정 태깅 API (/emotions/analyze)",
+            "🎭 AI 감정 분석 + 룰 기반 폴백",
+            "📊 감정 분석 통계 및 성능 모니터링",
+            "☁️ Google Drive 모델 자동 다운로드 지원"
         ]
     }
 
@@ -239,8 +240,8 @@ def health_check():
             "features_available": [
                 "1차 추천",
                 "2차 추천 (노트 기반)",
-                "감정 태깅 (🆕)",  # 새로 추가
                 "시향 일기",
+                "감정 태깅",  # 🆕
                 "매장 정보",
                 "사용자 인증"
             ]
@@ -280,10 +281,10 @@ def get_server_status():
             logger.error(f"SMTP 상태 확인 실패: {e}")
 
         # 🆕 감정 분석기 상태 확인
-        emotion_status = None
+        emotion_analyzer_status = None
         try:
             from utils.emotion_analyzer import emotion_analyzer
-            emotion_status = emotion_analyzer.get_analysis_stats()
+            emotion_analyzer_status = emotion_analyzer.get_analysis_stats()
         except Exception as e:
             logger.error(f"감정 분석기 상태 확인 실패: {e}")
 
@@ -294,12 +295,12 @@ def get_server_status():
             "environment": "production" if os.getenv("RENDER") else "development",
             "firebase": firebase_status,
             "smtp": smtp_status,
-            "emotion_analyzer": emotion_status,  # 🆕 추가
+            "emotion_analyzer": emotion_analyzer_status,  # 🆕
             "features": {
                 "auth": "Firebase Authentication",
                 "database": "SQLite + JSON Files",
                 "ml_model": "TensorFlow (Lazy Loading)",
-                "emotion_analysis": "AI + Rule-based",  # 🆕 추가
+                "emotion_analysis": "AI + Rule-based",  # 🆕
                 "deployment": "Render.com",
                 "email": "SMTP (Gmail)"
             },
@@ -313,25 +314,23 @@ def get_server_status():
                 "auth": "사용자 인증",
                 "users": "사용자 관리"
             },
-            "analysis_systems": {  # 🆕 추가
-                "recommendation_system": {
-                    "primary_recommendation": {
-                        "endpoint": "/perfumes/recommend-cluster",
-                        "method": "AI 감정 클러스터 모델",
-                        "input": "사용자 선호도 6개 특성",
-                        "output": "클러스터 + 향수 인덱스"
-                    },
-                    "secondary_recommendation": {
-                        "endpoint": "/perfumes/recommend-2nd",
-                        "method": "노트 매칭 + 감정 가중치",
-                        "input": "노트 선호도 + 감정 확률 + 선택 인덱스",
-                        "output": "정밀 점수 기반 추천"
-                    }
+            "recommendation_system": {
+                "primary_recommendation": {
+                    "endpoint": "/perfumes/recommend-cluster",
+                    "method": "AI 감정 클러스터 모델",
+                    "input": "사용자 선호도 6개 특성",
+                    "output": "클러스터 + 향수 인덱스"
                 },
-                "emotion_analysis": {  # 🆕 추가
+                "secondary_recommendation": {
+                    "endpoint": "/perfumes/recommend-2nd",
+                    "method": "노트 매칭 + 감정 가중치",
+                    "input": "노트 선호도 + 감정 확률 + 선택 인덱스",
+                    "output": "정밀 점수 기반 추천"
+                },
+                "emotion_tagging": {  # 🆕 추가
                     "endpoint": "/emotions/analyze",
-                    "method": "AI 모델 + 룰 기반",
-                    "input": "텍스트 (시향 일기, 리뷰 등)",
+                    "method": "AI + 룰 기반 감정 분석",
+                    "input": "시향 일기 텍스트",
                     "output": "감정 태그 + 신뢰도"
                 }
             }
@@ -355,59 +354,44 @@ def get_api_info():
         "documentation_url": "/docs",
         "redoc_url": "/redoc",
 
-        "main_workflows": {  # 🆕 수정
-            "recommendation_flow": {
-                "step_1": {
-                    "title": "1차 추천",
-                    "endpoint": "/perfumes/recommend-cluster",
-                    "description": "사용자 선호도 → AI 감정 클러스터 → 향수 인덱스 목록",
-                    "input_example": {
-                        "gender": "women",
-                        "season_tags": "spring",
-                        "time_tags": "day",
-                        "desired_impression": "confident, fresh",
-                        "activity": "casual",
-                        "weather": "hot"
-                    }
-                },
-                "step_2": {
-                    "title": "2차 추천",
-                    "endpoint": "/perfumes/recommend-2nd",
-                    "description": "노트 선호도 + 1차 결과 → 정밀 점수 계산 → 최종 추천",
-                    "input_example": {
-                        "user_note_scores": {
-                            "jasmine": 5,
-                            "rose": 4,
-                            "amber": 3,
-                            "musk": 0,
-                            "citrus": 2,
-                            "vanilla": 1
-                        },
-                        "emotion_proba": [0.01, 0.03, 0.85, 0.02, 0.05, 0.04],
-                        "selected_idx": [23, 45, 102, 200, 233, 305, 399, 410, 487, 512]
-                    }
+        "recommendation_flow": {
+            "step_1": {
+                "title": "1차 추천",
+                "endpoint": "/perfumes/recommend-cluster",
+                "description": "사용자 선호도 → AI 감정 클러스터 → 향수 인덱스 목록",
+                "input_example": {
+                    "gender": "women",
+                    "season_tags": "spring",
+                    "time_tags": "day",
+                    "desired_impression": "confident, fresh",
+                    "activity": "casual",
+                    "weather": "hot"
                 }
             },
-            "emotion_analysis_flow": {  # 🆕 추가
-                "step_1": {
-                    "title": "텍스트 감정 분석",
-                    "endpoint": "/emotions/analyze",
-                    "description": "시향 일기나 리뷰 텍스트 → AI 감정 분석 → 감정 태그",
-                    "input_example": {
-                        "text": "이 향수 정말 좋아요! 달콤하고 상큼해서 기분이 좋아져요."
-                    }
-                },
-                "step_2": {
-                    "title": "배치 감정 분석",
-                    "endpoint": "/emotions/analyze-batch",
-                    "description": "여러 텍스트 → 일괄 감정 분석 → 감정 통계",
-                    "input_example": {
-                        "texts": [
-                            "향이 너무 진해서 별로예요",
-                            "달콤하고 포근한 향기가 좋아요",
-                            "상쾌하고 시원한 느낌이에요"
-                        ]
-                    }
+            "step_2": {
+                "title": "2차 추천",
+                "endpoint": "/perfumes/recommend-2nd",
+                "description": "노트 선호도 + 1차 결과 → 정밀 점수 계산 → 최종 추천",
+                "input_example": {
+                    "user_note_scores": {
+                        "jasmine": 5,
+                        "rose": 4,
+                        "amber": 3,
+                        "musk": 0,
+                        "citrus": 2,
+                        "vanilla": 1
+                    },
+                    "emotion_proba": [0.01, 0.03, 0.85, 0.02, 0.05, 0.04],
+                    "selected_idx": [23, 45, 102, 200, 233, 305, 399, 410, 487, 512]
+                }
+            },
+            "step_3": {  # 🆕 추가
+                "title": "감정 태깅",
+                "endpoint": "/emotions/analyze",
+                "description": "시향 일기 텍스트 → AI 감정 분석 → 감정 태그 생성",
+                "input_example": {
+                    "text": "이 향수 정말 좋아요! 달콤하고 상큼해서 기분이 좋아져요.",
+                    "use_model": True
                 }
             }
         },
@@ -415,7 +399,7 @@ def get_api_info():
         "main_features": [
             "🤖 AI 감정 클러스터 기반 1차 추천",
             "🎯 노트 선호도 기반 2차 정밀 추천",
-            "🎭 AI 기반 텍스트 감정 분석 (🆕)",  # 새로 추가
+            "🎭 AI + 룰 기반 감정 태깅",  # 🆕
             "📝 시향 일기 작성 및 관리",
             "🗺️ 위치 기반 시향 코스 추천",
             "🏪 매장 정보 및 검색",
@@ -427,13 +411,22 @@ def get_api_info():
         "technical_stack": {
             "framework": "FastAPI",
             "ml_framework": "TensorFlow + scikit-learn",
-            "emotion_analysis": "AI Model + Rule-based",  # 🆕 추가
+            "emotion_analysis": "Custom AI + Rule-based",  # 🆕
             "authentication": "Firebase Auth",
             "database": "SQLite + JSON Files",
             "deployment": "Render.com",
             "email": "SMTP (Gmail)",
-            "model_storage": "Local + Google Drive"  # 🆕 추가
-        }
+            "cloud_storage": "Google Drive (모델 다운로드)"  # 🆕
+        },
+
+        "new_in_v1_3_0": [  # 🆕 추가
+            "🎭 감정 태깅 API 추가",
+            "🤖 AI 모델 + 룰 기반 감정 분석",
+            "☁️ Google Drive 모델 자동 다운로드",
+            "📊 감정 분석 성능 모니터링",
+            "🌸 향수 도메인 특화 키워드",
+            "🔄 폴백 메커니즘 강화"
+        ]
     }
 
 
@@ -445,7 +438,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
 
     logger.info(f"🚀 서버 시작: 포트 {port}")
-    logger.info(f"🆕 감정 태깅 및 Google Drive 모델 지원이 포함된 Whiff API v1.3.0")
+    logger.info(f"🆕 감정 태깅 기능이 포함된 Whiff API v1.3.0")
 
     uvicorn.run(
         "main:app",
