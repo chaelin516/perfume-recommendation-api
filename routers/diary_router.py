@@ -16,20 +16,43 @@ import time
 from collections import Counter
 
 # 🎭 감정 분석기 임포트 (안전한 방식)
-try:
-    from utils.emotion_analyzer import emotion_analyzer
+logger = logging.getLogger("diary_router")
 
-    EMOTION_ANALYZER_AVAILABLE = True
-    logger = logging.getLogger("diary_router")
-    logger.info("✅ 감정 분석기 로드 성공")
-except ImportError as e:
-    EMOTION_ANALYZER_AVAILABLE = False
-    logger = logging.getLogger("diary_router")
-    logger.warning(f"⚠️ 감정 분석기 로드 실패: {e}")
-except Exception as e:
-    EMOTION_ANALYZER_AVAILABLE = False
-    logger = logging.getLogger("diary_router")
-    logger.error(f"❌ 감정 분석기 초기화 오류: {e}")
+# 감정 분석기 가용성 확인
+EMOTION_ANALYZER_AVAILABLE = False
+emotion_analyzer = None
+
+
+def initialize_emotion_analyzer():
+    """감정 분석기 안전한 초기화"""
+    global EMOTION_ANALYZER_AVAILABLE, emotion_analyzer
+
+    try:
+        # 1단계: 모듈 임포트 시도
+        from utils.emotion_analyzer import emotion_analyzer as ea
+        emotion_analyzer = ea
+
+        # 2단계: 간단한 테스트
+        test_result = ea.get_supported_emotions()
+        if test_result and len(test_result) > 0:
+            EMOTION_ANALYZER_AVAILABLE = True
+            logger.info(f"✅ 감정 분석기 로드 성공 - 지원 감정: {test_result}")
+            return True
+        else:
+            raise Exception("지원 감정 목록 획득 실패")
+
+    except ImportError as e:
+        logger.warning(f"⚠️ emotion_analyzer 모듈 없음: {e}")
+        EMOTION_ANALYZER_AVAILABLE = False
+        return False
+    except Exception as e:
+        logger.warning(f"⚠️ 감정 분석기 초기화 실패: {e}")
+        EMOTION_ANALYZER_AVAILABLE = False
+        return False
+
+
+# 초기화 시도
+initialize_emotion_analyzer()
 
 router = APIRouter(prefix="/diaries", tags=["Diary"])
 
