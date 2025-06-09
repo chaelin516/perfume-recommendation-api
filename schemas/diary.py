@@ -12,6 +12,18 @@ class DiaryCreateRequest(BaseModel):
     is_public: bool
     emotion_tags: Optional[List[str]] = []
 
+    class Config:
+        schema_extra = {
+            "example": {
+                "user_id": "john_doe",
+                "perfume_name": "Chanel No.5",
+                "content": "오늘은 봄바람이 느껴지는 향수와 산책했어요.",
+                "is_public": False,
+                "emotion_tags": ["calm", "spring"]
+            }
+        }
+
+
 # ✅ 프론트엔드에 시향 일기 결과를 응답할 때 사용하는 모델
 class DiaryResponse(BaseModel):
     id: str

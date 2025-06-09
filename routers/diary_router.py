@@ -363,18 +363,6 @@ diary_data = load_diary_data()
 
 # ✅ API 엔드포인트들
 
-@router.get("/emotion-status", summary="감정 분석 시스템 상태")
-async def check_emotion_status():
-    """감정 분석 시스템 상태 확인"""
-    return JSONResponse(content={
-        "emotion_analyzer_available": False,
-        "analysis_method": "rule_based",
-        "supported_emotions": list(EMOTION_RULES.keys()),
-        "system_status": "rule_based_only",
-        "context_modifiers": list(CONTEXT_EMOTION_MODIFIERS.keys()),
-        "perfume_types": list(PERFUME_TYPE_EMOTIONS.keys())
-    })
-
 
 @router.post("/", summary="시향 일기 작성")
 async def write_diary(
@@ -528,72 +516,3 @@ async def get_diary_list(
             content={"message": f"서버 오류: {str(e)}"}
         )
 
-
-@router.post("/{diary_id}/like", summary="시향 일기 좋아요")
-async def like_diary(diary_id: str):
-    try:
-        for diary in diary_data:
-            if diary.get("id") == diary_id:
-                diary["likes"] = diary.get("likes", 0) + 1
-                diary["updated_at"] = datetime.now().isoformat()
-                save_diary_data(diary_data)
-                return JSONResponse(content={"message": "좋아요가 추가되었습니다."})
-
-        return JSONResponse(status_code=404, content={"message": "일기를 찾을 수 없습니다."})
-
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"message": f"오류: {str(e)}"})
-
-
-@router.delete("/{diary_id}/unlike", summary="시향 일기 좋아요 취소")
-async def unlike_diary(diary_id: str):
-    try:
-        for diary in diary_data:
-            if diary.get("id") == diary_id:
-                diary["likes"] = max(0, diary.get("likes", 0) - 1)
-                diary["updated_at"] = datetime.now().isoformat()
-                save_diary_data(diary_data)
-                return JSONResponse(content={"message": "좋아요가 취소되었습니다."})
-
-        return JSONResponse(status_code=404, content={"message": "일기를 찾을 수 없습니다."})
-
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"message": f"오류: {str(e)}"})
-
-
-@router.get("/emotions/rules", summary="감정 분석 룰 조회")
-async def get_emotion_rules():
-    """현재 적용 중인 감정 분석 룰 반환"""
-    return JSONResponse(content={
-        "emotion_rules": {
-            emotion: {
-                "keyword_count": len(rules["keywords"]),
-                "sample_keywords": rules["keywords"][:5],
-                "tags": rules["tags"],
-                "base_confidence": rules["base_confidence"]
-            }
-            for emotion, rules in EMOTION_RULES.items()
-        },
-        "context_modifiers": CONTEXT_EMOTION_MODIFIERS,
-        "perfume_type_emotions": PERFUME_TYPE_EMOTIONS,
-        "total_emotions": len(EMOTION_RULES)
-    })
-
-
-@router.post("/test-analysis", summary="감정 분석 테스트")
-async def test_emotion_analysis(
-        text: str = Query(..., description="분석할 텍스트"),
-        perfume_name: str = Query("", description="향수 이름")
-):
-    """감정 분석 룰 테스트용 엔드포인트"""
-    try:
-        result = await rule_based_emotion_analysis(text, perfume_name)
-        return JSONResponse(content={
-            "input": {"text": text, "perfume_name": perfume_name},
-            "analysis_result": result
-        })
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"분석 중 오류: {str(e)}"}
-        )

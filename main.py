@@ -294,10 +294,8 @@ def register_routers():
             "/perfumes/recommend-cluster",
             "/perfumes/recommend-2nd",
             "/diaries/",
-            "/diaries/emotion-status",
             "/auth/register",
-            "/stores/",
-            "/courses/recommend"
+            "/stores/"
         ]
 
         logger.info("🎯 주요 엔드포인트 확인:")
