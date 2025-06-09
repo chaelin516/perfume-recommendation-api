@@ -1,12 +1,11 @@
-# routers/diary_router.py - 룰 기반 감정분석 시스템
+# routers/diary_router.py - 룰 기반 감정분석 시스템 (토큰 인증 제거)
 
-from fastapi import APIRouter, Query, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Query, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 from schemas.diary import DiaryCreateRequest, DiaryResponse
 from schemas.common import BaseResponse
 from datetime import datetime, date
 from typing import Optional, List, Dict, Any
-from utils.auth_utils import verify_firebase_token_optional, get_firebase_status
 import os
 import json
 import uuid
@@ -59,64 +58,42 @@ EMOTION_RULES = {
     },
     "자신감": {
         "keywords": [
-            "자신감", "당당", "세련", "고급", "품격", "우아", "카리스마", "매력", "파워풀",
-            "강렬", "도전", "용기", "확신", "믿음", "프로페셔널", "세련", "스타일리시",
-            "트렌디", "모던", "시크", "엘레간트", "클래식", "럭셔리"
+            "자신감", "당당", "세련", "고급", "품격", "우아", "카리스마", "멋있", "섹시",
+            "매력적", "강렬", "파워풀", "임팩트", "프로페셔널", "성숙한", "어른스러운"
         ],
-        "tags": ["#confident", "#elegant", "#powerful", "#sophisticated", "#stylish"],
+        "tags": ["#confident", "#elegant", "#sophisticated", "#charismatic", "#powerful"],
         "base_confidence": 0.65
-    },
-    "그리움": {
-        "keywords": [
-            "그리운", "그립", "추억", "옛날", "과거", "예전", "어릴 때", "학창시절", "고향",
-            "엄마", "아빠", "가족", "친구", "연인", "첫사랑", "추억에 잠기", "생각나",
-            "떠올", "회상", "향수", "그때 그 시절", "아련", "먹먹", "울컥"
-        ],
-        "tags": ["#nostalgic", "#memory", "#longing", "#sentimental", "#reminiscent"],
-        "base_confidence": 0.6
     },
     "활력": {
         "keywords": [
-            "활력", "에너지", "생기", "활기", "역동", "파워", "힘", "원기", "건강", "활발",
-            "상쾌", "시원", "청량", "신선", "맑은", "깨끗", "정화", "리프레시", "기운",
-            "투명", "깔끔", "시원시원", "톡톡", "상큼발랄", "생기발랄"
+            "활력", "에너지", "생동감", "활기", "싱그러운", "상쾌", "시원", "청량감",
+            "톡톡", "팝", "활발", "역동적", "젊은", "발랄", "명랑", "생기발랄"
         ],
-        "tags": ["#energetic", "#fresh", "#vibrant", "#lively", "#refreshing"],
-        "base_confidence": 0.7
+        "tags": ["#energetic", "#fresh", "#vibrant", "#lively", "#dynamic"],
+        "base_confidence": 0.6
     },
     "로맨틱": {
         "keywords": [
-            "로맨틱", "낭만", "사랑", "연인", "데이트", "로맨스", "달콤한", "달달한",
-            "로즈", "꽃", "플로럴", "여성스러운", "부드러운", "섬세한", "우아한",
-            "분홍", "예쁜", "아름다운", "사랑스러운", "귀여운", "매력적", "혹시나",
-            "설레게 하는", "마음을 녹이는", "감미로운"
+            "로맨틱", "낭만", "사랑", "달콤", "부드러운", "따뜻한", "포근", "감미로운",
+            "달콤쌉쌀", "심쿵", "로맨스", "데이트", "연인", "커플", "달달한"
         ],
-        "tags": ["#romantic", "#lovely", "#sweet", "#floral", "#feminine"],
-        "base_confidence": 0.65
-    },
-    "실망": {
-        "keywords": [
-            "실망", "아쉬", "후회", "별로", "이상", "안좋", "싫", "나쁜", "실수", "망함",
-            "기대 이하", "아니다", "맞지 않", "어울리지 않", "너무", "과하", "부담스러운",
-            "무거운", "답답", "숨막히", "거부감", "거슬리", "불편", "어색"
-        ],
-        "tags": ["#disappointed", "#regretful", "#unsatisfied", "#uncomfortable"],
+        "tags": ["#romantic", "#sweet", "#lovely", "#tender", "#affectionate"],
         "base_confidence": 0.7
     },
-    "중립": {
+    "그리움": {
         "keywords": [
-            "평범", "무난", "그냥", "괜찮", "보통", "적당", "적절", "일반적", "특별하지 않",
-            "그런대로", "나쁘지 않", "좋지도 나쁘지도", "그저 그런", "평평한", "밋밋"
+            "그리움", "향수", "추억", "그립", "옛날", "어릴적", "추상적", "몽환적",
+            "아련", "쓸쓸", "서정적", "감성적", "애틋", "생각나", "기억"
         ],
-        "tags": ["#neutral", "#normal", "#okay", "#moderate"],
-        "base_confidence": 0.5
+        "tags": ["#nostalgic", "#memory", "#longing", "#sentimental", "#wistful"],
+        "base_confidence": 0.6
     }
 }
 
-# 🌟 계절/시간/상황별 감정 보정 룰
-CONTEXT_EMOTION_MODIFIERS = {
+# 🌍 상황별 감정 부스터
+CONTEXT_BOOSTERS = {
     "계절": {
-        "봄": {"설렘": 0.2, "활력": 0.15, "로맨틱": 0.1},
+        "봄": {"기쁨": 0.2, "활력": 0.15, "로맨틱": 0.1},
         "여름": {"활력": 0.25, "자신감": 0.15, "기쁨": 0.1},
         "가을": {"그리움": 0.2, "평온": 0.15, "로맨틱": 0.1},
         "겨울": {"평온": 0.2, "그리움": 0.15, "로맨틱": 0.1}
@@ -189,18 +166,18 @@ def extract_context_from_text(text: str) -> Dict[str, str]:
         "아침": ["아침", "새벽", "출근", "모닝"],
         "낮": ["낮", "점심", "오후", "데이타임"],
         "저녁": ["저녁", "퇴근", "이브닝"],
-        "밤": ["밤", "야간", "나이트", "잠들기 전"]
+        "밤": ["밤", "야간", "늦은", "자기전"]
     }
 
     # 상황 키워드
     situation_keywords = {
-        "데이트": ["데이트", "약속", "만남", "연인", "커플"],
+        "데이트": ["데이트", "만남", "연인", "커플"],
         "업무": ["회사", "업무", "미팅", "출근", "직장"],
-        "휴식": ["휴식", "쉬는", "여유", "릴렉스", "힐링"],
-        "외출": ["외출", "나들이", "쇼핑", "산책"]
+        "휴식": ["휴식", "쉬", "여유", "릴렉스"],
+        "외출": ["외출", "나가", "쇼핑", "친구"]
     }
 
-    # 각 카테고리별로 키워드 매칭
+    # 키워드 매칭
     for season, keywords in season_keywords.items():
         if any(keyword in text_lower for keyword in keywords):
             context["계절"] = season
@@ -220,16 +197,16 @@ def extract_context_from_text(text: str) -> Dict[str, str]:
 
 
 def detect_perfume_type(perfume_name: str) -> str:
-    """향수 이름에서 타입 추정"""
+    """향수 이름으로부터 타입 추론"""
     perfume_lower = perfume_name.lower()
 
     type_keywords = {
-        "플로럴": ["rose", "jasmine", "lily", "peony", "gardenia", "플로럴", "로즈", "자스민"],
-        "시트러스": ["lemon", "orange", "bergamot", "grapefruit", "시트러스", "레몬", "오렌지"],
-        "우디": ["wood", "cedar", "sandalwood", "oak", "우디", "나무", "시더"],
-        "바닐라": ["vanilla", "바닐라", "달콤"],
-        "머스크": ["musk", "머스크", "musk", "앰버"],
-        "프루티": ["berry", "apple", "peach", "fruit", "베리", "사과", "복숭아"]
+        "플로럴": ["rose", "jasmine", "lily", "peony", "장미", "자스민", "백합"],
+        "시트러스": ["lemon", "orange", "bergamot", "citrus", "레몬", "오렌지", "베르가못"],
+        "우디": ["wood", "cedar", "sandalwood", "oak", "우드", "시더", "샌달우드"],
+        "바닐라": ["vanilla", "바닐라"],
+        "머스크": ["musk", "머스크"],
+        "프루티": ["apple", "peach", "berry", "사과", "복숭아", "베리"]
     }
 
     for perfume_type, keywords in type_keywords.items():
@@ -239,94 +216,77 @@ def detect_perfume_type(perfume_name: str) -> str:
     return "기타"
 
 
-async def rule_based_emotion_analysis(text: str, perfume_name: str = "") -> Dict[str, Any]:
-    """룰 기반 감정 분석 메인 함수"""
+async def rule_based_emotion_analysis(content: str, perfume_name: str = "") -> Dict[str, Any]:
+    """룰 기반 감정 분석 엔진"""
     try:
-        if not text or not text.strip():
+        logger.info(f"🎯 룰 기반 감정 분석 시작: 텍스트 길이 {len(content)}자")
+
+        if not content or not content.strip():
             return {
-                "success": True,
+                "success": False,
                 "primary_emotion": "중립",
                 "confidence": 0.3,
                 "emotion_tags": ["#neutral"],
-                "analysis_method": "no_content",
-                "emotion_scores": {},
-                "context_detected": {}
+                "analysis_method": "no_content"
             }
 
-        text_lower = text.lower()
+        content_lower = content.lower()
         emotion_scores = {}
 
-        # 1. 기본 키워드 매칭으로 감정 점수 계산
+        # 각 감정별 점수 계산
         for emotion, rule in EMOTION_RULES.items():
-            score = 0
             matched_keywords = []
+            score = 0.0
 
+            # 키워드 매칭
             for keyword in rule["keywords"]:
-                if keyword in text_lower:
-                    score += 1
+                if keyword in content_lower:
                     matched_keywords.append(keyword)
+                    score += 1.0
 
-            # 키워드 개수에 따른 점수 정규화
+            # 기본 신뢰도 적용
             if matched_keywords:
+                confidence = min(rule["base_confidence"] + (len(matched_keywords) * 0.1), 0.95)
                 emotion_scores[emotion] = {
-                    "base_score": score,
+                    "confidence": confidence,
                     "matched_keywords": matched_keywords,
-                    "confidence": min(rule["base_confidence"] + (score - 1) * 0.1, 0.95)
+                    "keyword_count": len(matched_keywords)
                 }
 
-        # 2. 컨텍스트 정보 추출
-        context = extract_context_from_text(text)
+        # 상황별 부스터 적용
+        context = extract_context_from_text(content)
+        for context_type, context_value in context.items():
+            if context_value and context_type in CONTEXT_BOOSTERS:
+                boosters = CONTEXT_BOOSTERS[context_type].get(context_value, {})
+                for emotion, boost in boosters.items():
+                    if emotion in emotion_scores:
+                        emotion_scores[emotion]["confidence"] += boost
+                        emotion_scores[emotion]["confidence"] = min(emotion_scores[emotion]["confidence"], 0.95)
 
-        # 3. 향수 타입 감정 보정
+        # 향수 타입별 감정 부스터
         perfume_type = detect_perfume_type(perfume_name)
         if perfume_type in PERFUME_TYPE_EMOTIONS:
             for emotion in PERFUME_TYPE_EMOTIONS[perfume_type]:
                 if emotion in emotion_scores:
                     emotion_scores[emotion]["confidence"] += 0.1
-                else:
-                    emotion_scores[emotion] = {
-                        "base_score": 0.5,
-                        "matched_keywords": [f"향수타입:{perfume_type}"],
-                        "confidence": 0.4
-                    }
+                    emotion_scores[emotion]["confidence"] = min(emotion_scores[emotion]["confidence"], 0.95)
 
-        # 4. 컨텍스트 기반 감정 보정
-        for context_type, context_value in context.items():
-            if context_value and context_type in CONTEXT_EMOTION_MODIFIERS:
-                modifiers = CONTEXT_EMOTION_MODIFIERS[context_type].get(context_value, {})
-                for emotion, boost in modifiers.items():
-                    if emotion in emotion_scores:
-                        emotion_scores[emotion]["confidence"] += boost
-                    else:
-                        emotion_scores[emotion] = {
-                            "base_score": 0.3,
-                            "matched_keywords": [f"컨텍스트:{context_value}"],
-                            "confidence": 0.3 + boost
-                        }
+        # 주요 감정 결정
+        if emotion_scores:
+            primary_emotion = max(emotion_scores.keys(), key=lambda e: emotion_scores[e]["confidence"])
+            confidence = emotion_scores[primary_emotion]["confidence"]
 
-        # 5. 최종 감정 결정
-        if not emotion_scores:
+            # 감정 태그 생성 (상위 3개 감정)
+            top_emotions = sorted(emotion_scores.items(), key=lambda x: x[1]["confidence"], reverse=True)[:3]
+            emotion_tags = []
+            for emotion, data in top_emotions:
+                emotion_tags.extend(EMOTION_RULES[emotion]["tags"][:2])
+        else:
             primary_emotion = "중립"
             confidence = 0.3
             emotion_tags = ["#neutral"]
-        else:
-            # 가장 높은 신뢰도의 감정 선택
-            primary_emotion = max(emotion_scores.keys(),
-                                  key=lambda x: emotion_scores[x]["confidence"])
-            confidence = emotion_scores[primary_emotion]["confidence"]
-            emotion_tags = EMOTION_RULES[primary_emotion]["tags"].copy()
 
-            # 상위 2개 감정의 태그도 포함
-            sorted_emotions = sorted(emotion_scores.items(),
-                                     key=lambda x: x[1]["confidence"], reverse=True)
-            for emotion, data in sorted_emotions[1:3]:  # 2, 3번째 감정
-                if data["confidence"] > 0.4:  # 임계값 이상인 경우만
-                    emotion_tags.extend(EMOTION_RULES[emotion]["tags"][:2])
-
-        # 중복 태그 제거
-        emotion_tags = list(set(emotion_tags))
-
-        # 6. 분석 결과 정리
+        # 분석 결과 정리
         analysis_result = {
             "success": True,
             "primary_emotion": primary_emotion,
@@ -363,19 +323,40 @@ diary_data = load_diary_data()
 
 # ✅ API 엔드포인트들
 
+def get_default_user():
+    """기본 사용자 정보 (토큰 없이 사용할 때)"""
+    return {
+        "uid": "anonymous_user",
+        "name": "익명 사용자",
+        "email": "",
+        "picture": ""
+    }
+
 
 @router.post("/", summary="시향 일기 작성")
 async def write_diary(
         entry: DiaryCreateRequest,
-        background_tasks: BackgroundTasks,
-        user=Depends(verify_firebase_token_optional)
+        background_tasks: BackgroundTasks
 ):
+    """
+    시향 일기 작성 (토큰 인증 없음)
+
+    - user_id는 요청 데이터에서 받습니다
+    - 토큰 인증이 제거되어 누구나 사용 가능합니다
+    """
     try:
-        user_id = user["uid"]
+        # 기본 사용자 정보 설정 (토큰 없이 사용)
+        user = get_default_user()
+
+        # user_id가 요청에 있으면 사용, 없으면 기본값 사용
+        user_id = getattr(entry, 'user_id', 'anonymous_user')
+        if hasattr(entry, 'user_id') and entry.user_id:
+            user_id = entry.user_id
+
         now = datetime.now().isoformat()
         diary_id = str(uuid.uuid4())
 
-        logger.info(f"📝 새 일기 작성: {user.get('name', '익명')} - {entry.perfume_name}")
+        logger.info(f"📝 새 일기 작성: {user_id} - {entry.perfume_name}")
 
         # 룰 기반 감정 분석
         initial_analysis = None
@@ -437,6 +418,7 @@ async def write_diary(
             content={
                 "message": "시향 일기가 성공적으로 저장되었습니다.",
                 "diary_id": diary_id,
+                "user_id": user_id,
                 "emotion_analysis": {
                     "status": diary["emotion_analysis_status"],
                     "method": "rule_based",
@@ -516,3 +498,61 @@ async def get_diary_list(
             content={"message": f"서버 오류: {str(e)}"}
         )
 
+
+@router.get("/{diary_id}", summary="특정 시향 일기 조회")
+async def get_diary_detail(diary_id: str):
+    """특정 시향 일기의 상세 정보를 조회합니다."""
+    try:
+        diary = next((d for d in diary_data if d.get("id") == diary_id), None)
+
+        if not diary:
+            raise HTTPException(status_code=404, detail="시향 일기를 찾을 수 없습니다.")
+
+        return BaseResponse(
+            message="시향 일기 조회 성공",
+            result=diary
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 일기 상세 조회 오류: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"message": f"서버 오류: {str(e)}"}
+        )
+
+
+@router.get("/stats/emotions", summary="감정 통계")
+async def get_emotion_stats():
+    """시향 일기의 감정 분석 통계를 반환합니다."""
+    try:
+        emotion_counts = Counter()
+        total_diaries = len(diary_data)
+
+        for diary in diary_data:
+            primary_emotion = diary.get("primary_emotion", "중립")
+            emotion_counts[primary_emotion] += 1
+
+        emotion_stats = {}
+        for emotion, count in emotion_counts.items():
+            emotion_stats[emotion] = {
+                "count": count,
+                "percentage": round((count / total_diaries) * 100, 2) if total_diaries > 0 else 0
+            }
+
+        return BaseResponse(
+            message="감정 통계 조회 성공",
+            result={
+                "total_diaries": total_diaries,
+                "emotion_distribution": emotion_stats,
+                "most_common_emotions": emotion_counts.most_common(5)
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"❌ 감정 통계 조회 오류: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"message": f"서버 오류: {str(e)}"}
+        )
