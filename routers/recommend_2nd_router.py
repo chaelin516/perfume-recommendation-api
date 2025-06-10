@@ -304,20 +304,44 @@ def call_ai_model_for_first_recommendation(user_preferences: dict) -> Dict:
 # ─── 7. 스키마 정의 ─────────────────────────────────────────────────────────────
 class UserPreferences(BaseModel):
     """1차 추천을 위한 사용자 선호도"""
-    gender: str = Field(..., description="성별", example="women")
-    season_tags: str = Field(..., description="계절", example="spring")
-    time_tags: str = Field(..., description="시간", example="day")
-    desired_impression: str = Field(..., description="원하는 인상", example="confident, fresh")
-    activity: str = Field(..., description="활동", example="casual")
-    weather: str = Field(..., description="날씨", example="hot")
+    gender: str = Field(..., description="성별", example="men")
+    season_tags: str = Field(..., description="계절", example="winter")
+    time_tags: str = Field(..., description="시간", example="night")
+    desired_impression: str = Field(..., description="원하는 인상", example="mysterious, elegant")
+    activity: str = Field(..., description="활동", example="date")
+    weather: str = Field(..., description="날씨", example="cold")
 
 
 class SecondRecommendRequest(BaseModel):
     """2차 추천 요청 스키마"""
     user_preferences: UserPreferences = Field(..., description="1차 추천을 위한 사용자 선호도")
-    user_note_scores: Dict[str, int] = Field(..., description="사용자의 노트별 선호도 점수 (0-5)")
-    emotion_proba: Optional[List[float]] = Field(None, description="6개 감정 클러스터별 확률 배열")
-    selected_idx: Optional[List[int]] = Field(None, description="1차 추천에서 선택된 향수 인덱스 목록")
+
+    # 🔧 이 부분을 수정 - example 추가
+    user_note_scores: Dict[str, int] = Field(
+        ...,
+        description="사용자의 노트별 선호도 점수 (0-5)",
+        example={
+            "amber": 1,
+            "citrus": 4,
+            "jasmine": 2,
+            "musk": 5,
+            "rose": 0,
+            "vanilla": 3
+        }
+    )
+
+    # 🔧 이 부분들도 수정 - example 추가
+    emotion_proba: Optional[List[float]] = Field(
+        None,
+        description="6개 감정 클러스터별 확률 배열",
+        example=[0.05, 0.10, 0.20, 0.15, 0.30, 0.20]
+    )
+
+    selected_idx: Optional[List[int]] = Field(
+        None,
+        description="1차 추천에서 선택된 향수 인덱스 목록",
+        example=[10, 58, 124, 256, 317, 405, 478, 551, 612, 719]
+    )
 
     @validator('user_note_scores')
     def validate_note_scores(cls, v):
@@ -337,6 +361,30 @@ class SecondRecommendRequest(BaseModel):
             raise ValueError(f"emotion_proba의 합은 1.0에 가까워야 합니다. 현재: {total}")
         return v
 
+    # Config 클래스는 그대로 유지
+    class Config:
+        schema_extra = {
+            "example": {
+                "user_preferences": {
+                    "gender": "men",
+                    "season_tags": "winter",
+                    "time_tags": "night",
+                    "desired_impression": "mysterious, elegant",
+                    "activity": "date",
+                    "weather": "cold"
+                },
+                "user_note_scores": {
+                    "amber": 1,
+                    "citrus": 4,
+                    "jasmine": 2,
+                    "musk": 5,
+                    "rose": 0,
+                    "vanilla": 3
+                },
+                "emotion_proba": [0.05, 0.10, 0.20, 0.15, 0.30, 0.20],
+                "selected_idx": [10, 58, 124, 256, 317, 405, 478, 551, 612, 719]
+            }
+        }
 
 class SecondRecommendItem(BaseModel):
     """2차 추천 결과 아이템"""
@@ -344,7 +392,18 @@ class SecondRecommendItem(BaseModel):
     brand: str = Field(..., description="브랜드명")
     final_score: float = Field(..., description="최종 추천 점수", ge=0.0, le=1.0)
     emotion_cluster: int = Field(..., description="감정 클러스터 ID", ge=0, le=5)
+    image_url: str = Field(..., description="향수 이미지 URL")  # 🆕 추가
 
+    class Config:
+        schema_extra = {
+            "example": {
+                "name": "Black Opium Nuit Blanche",
+                "brand": "Yves Saint Laurent",
+                "final_score": 0.383,
+                "emotion_cluster": 3,
+                "image_url": "https://img.fragrancex.com/images/products/parent/medium/73667w.jpg"
+            }
+        }
 
 # ─── 8. 노트 분석 유틸리티 함수들 ─────────────────────────────────────────────────
 def parse_notes_from_string(notes_str: str) -> List[str]:
@@ -532,6 +591,7 @@ def process_second_recommendation(
                 'brand': perfume_brand,
                 'final_score': round(final_score, 3),
                 'emotion_cluster': perfume_cluster,
+                'image_url': str(row.get('image_url', '')),
                 'note_match_score': round(note_match_score, 3),
                 'emotion_weight': round(emotion_weight, 3),
                 'diversity_bonus': round(diversity_bonus, 3),
@@ -618,7 +678,8 @@ def recommend_second_perfumes(request: SecondRecommendRequest):
                     name=result['name'],
                     brand=result['brand'],
                     final_score=result['final_score'],
-                    emotion_cluster=result['emotion_cluster']
+                    emotion_cluster=result['emotion_cluster'],
+                    image_url=result.get('image_url', '')
                 )
             )
 
