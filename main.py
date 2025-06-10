@@ -1,4 +1,4 @@
-# main.py - Whiff API Server (API 삭제 반영 버전)
+# main.py - 이미지 업로드 및 서빙 기능 추가된 버전
 
 import os
 import logging
@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles  # 🆕 정적 파일 서빙용
+from fastapi import HTTPException
 
 # ─── 로깅 설정 ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -27,21 +29,24 @@ app = FastAPI(
     - **1차 추천**: AI 감정 클러스터 모델 기반 향수 추천
     - **2차 추천**: 노트 선호도 기반 정밀 추천  
     - **시향 일기**: AI 감정 분석 포함 일기 작성
+    - **📸 이미지 업로드**: 시향 일기에 사진 첨부 기능
     - **사용자 인증**: Firebase 기반 회원 관리
 
     ## 🚀 기술 스택
     - **Backend**: FastAPI + Python
     - **AI/ML**: TensorFlow + Custom Emotion Analyzer
     - **Database**: SQLite + JSON Files
+    - **Image Processing**: Pillow (PIL)
     - **Authentication**: Firebase
     - **Deployment**: Render.com
 
     ## 📋 API 버전 정보
-    - **Version**: 1.3.0
+    - **Version**: 1.4.0
     - **Environment**: Production
     - **Last Updated**: 2025-06-10
+    - **New Features**: 이미지 업로드 및 처리 기능 추가
     """,
-    version="1.3.0",
+    version="1.4.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -61,6 +66,36 @@ app.add_middleware(
 )
 
 
+# ─── 🆕 업로드 디렉토리 설정 및 정적 파일 서빙 ──────────────────────────────────────
+def setup_upload_directories():
+    """업로드 디렉토리 생성 및 정적 파일 마운트"""
+    try:
+        # 업로드 디렉토리 경로
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+        DIARY_IMAGES_DIR = os.path.join(UPLOAD_DIR, "diary_images")
+        THUMBNAILS_DIR = os.path.join(DIARY_IMAGES_DIR, "thumbnails")
+
+        # 디렉토리 생성
+        os.makedirs(DIARY_IMAGES_DIR, exist_ok=True)
+        os.makedirs(THUMBNAILS_DIR, exist_ok=True)
+
+        logger.info(f"✅ 업로드 디렉토리 생성: {UPLOAD_DIR}")
+
+        # 정적 파일 마운트 (업로드된 이미지들을 웹에서 접근 가능하게)
+        if os.path.exists(UPLOAD_DIR):
+            app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+            logger.info(f"📁 정적 파일 마운트: /uploads -> {UPLOAD_DIR}")
+        else:
+            logger.warning(f"⚠️ 업로드 디렉토리가 존재하지 않습니다: {UPLOAD_DIR}")
+
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ 업로드 디렉토리 설정 실패: {e}")
+        return False
+
+
 # ─── 서버 시작/종료 이벤트 ─────────────────────────────────────────────────────────
 @app.on_event("startup")
 async def startup_event():
@@ -70,102 +105,55 @@ async def startup_event():
         logger.info(f"📍 Environment: {'Production' if os.getenv('RENDER') else 'Development'}")
         logger.info(f"📍 Port: {os.getenv('PORT', '8000')}")
 
+        # 🆕 업로드 디렉토리 설정
+        upload_setup_success = setup_upload_directories()
+        if upload_setup_success:
+            logger.info("📸 이미지 업로드 기능 활성화")
+        else:
+            logger.warning("⚠️ 이미지 업로드 기능 비활성화")
+
         # 📊 Firebase 상태 확인
         firebase_status = {"firebase_available": False, "error": None}
         try:
             from utils.auth_utils import get_firebase_status
             firebase_status = get_firebase_status()
-            logger.info(f"🔥 Firebase 상태: {'✅ 연결됨' if firebase_status['firebase_available'] else '❌ 연결 실패'}")
         except Exception as e:
-            logger.error(f"Firebase 상태 확인 실패: {e}")
-            firebase_status = {"firebase_available": False, "error": str(e)}
+            firebase_status["error"] = str(e)
+            logger.warning(f"⚠️ Firebase 상태 확인 실패: {e}")
 
-        # 🎭 감정 분석 시스템 상태 확인 (lazy loading)
-        emotion_analyzer_status = {"available": False, "method": "none"}
-        try:
-            logger.info("🎭 감정 분석 시스템 확인 중...")
-            try:
-                from emotion.emotion_analyzer import EmotionAnalyzer
-                emotion_analyzer = EmotionAnalyzer()
-
-                # 간단한 테스트로 초기화 확인
-                test_result = emotion_analyzer.analyze_emotion("테스트 텍스트", use_model=False)
-                if test_result and test_result.get("success"):
-                    emotion_analyzer_status = {
-                        "available": True,
-                        "method": "AI + Rule-based",
-                        "supported_emotions": emotion_analyzer.get_supported_emotions()
-                    }
-                    logger.info("✅ 감정 분석기 초기화 완료 (AI + 룰 기반)")
-                else:
-                    raise Exception("감정 분석기 테스트 실패")
-            except ImportError as e:
-                logger.warning(f"⚠️ emotion_analyzer 모듈 없음: {e}")
-                emotion_analyzer_status = {"available": False, "method": "fallback_only"}
-            except Exception as e:
-                logger.warning(f"⚠️ 감정 분석기 초기화 실패: {e}")
-                emotion_analyzer_status = {"available": False, "method": "fallback_only"}
-
-        except Exception as e:
-            logger.error(f"❌ 감정 분석 시스템 초기화 실패: {e}")
-            emotion_analyzer_status = {"available": False, "method": "none"}
-
-        # 📊 추천 모델 상태 확인 (lazy loading)
-        recommendation_status = {"ai_model_available": False, "fallback_available": True}
-        try:
-            # 추천 모델 파일 존재 여부만 확인
-            model_paths = [
-                "./models/final_model.keras",
-                "./models/encoder.pkl"
-            ]
-
-            files_exist = all(os.path.exists(path) for path in model_paths)
-            if files_exist:
-                recommendation_status["ai_model_available"] = True
-                logger.info("🤖 추천 AI 모델 파일 확인됨 (Lazy Loading)")
-            else:
-                logger.info("📋 추천 AI 모델 없음, 룰 기반으로 동작")
-
-        except Exception as e:
-            logger.warning(f"⚠️ 추천 모델 상태 확인 실패: {e}")
-
-        logger.info("📊 시스템 상태 요약:")
-        logger.info(f"  - Firebase: {'✅' if firebase_status['firebase_available'] else '❌'}")
-        logger.info(
-            f"  - 감정 분석: {'✅' if emotion_analyzer_status['available'] else '❌'} ({emotion_analyzer_status['method']})")
-        logger.info(f"  - 추천 AI: {'✅' if recommendation_status['ai_model_available'] else '❌'}")
-        logger.info(f"  - 추천 룰: ✅")
+        if firebase_status["firebase_available"]:
+            logger.info("🔥 Firebase 인증 시스템 활성화")
+        else:
+            logger.warning("⚠️ Firebase 인증 시스템 비활성화")
 
         logger.info("✅ Whiff API 서버 시작 완료!")
 
     except Exception as e:
         logger.error(f"❌ 서버 시작 중 오류: {e}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    logger.info("🔚 Whiff API 서버가 종료됩니다.")
+    """서버 종료 시 정리"""
+    logger.info("🛑 Whiff API 서버 종료 중...")
 
 
-# ─── 라우터 등록 함수 (API 삭제 반영) ────────────────────────────────────────────
+# ─── 라우터 등록 함수 ─────────────────────────────────────────────────────────────
 def register_routers():
-    """라우터를 안전하게 등록 (삭제된 API 반영)"""
+    """모든 라우터를 등록합니다"""
     try:
-        logger.info("📋 라우터 등록 시작...")
+        logger.info("🔌 라우터 등록 시작...")
 
-        # 📊 등록 성공/실패 추적
         router_status = {}
 
-        # 1. 기본 라우터들 (필수) - store_router 제거됨
-        essential_routers = [
-            ("perfume_router", "기본 향수 정보", "routers.perfume_router"),
-            # ("store_router", "매장 정보", "routers.store_router"),  # ✅ 삭제됨
-            ("auth_router", "사용자 인증", "routers.auth_router"),
-            ("user_router", "사용자 관리", "routers.user_router")
+        # 1. 향수 관련 라우터들
+        main_routers = [
+            ("perfume_router", "향수 데이터", "routers.perfume_router"),
+            ("recommend_router", "1차 추천 (감정 클러스터)", "routers.recommend_router"),
+            ("recommend_2nd_router", "2차 추천 (노트 기반)", "routers.recommend_2nd_router"),
         ]
 
-        for router_name, description, module_path in essential_routers:
+        for router_name, description, module_path in main_routers:
             try:
                 module = __import__(module_path, fromlist=['router'])
                 app.include_router(module.router)
@@ -175,26 +163,27 @@ def register_routers():
                 router_status[router_name] = f"❌ 실패: {str(e)}"
                 logger.error(f"  ❌ {description} 라우터 등록 실패: {e}")
 
-        # 2. 추천 시스템 라우터들 - course_router 제거됨
-        recommendation_routers = [
-            # ("course_router", "시향 코스 추천", "routers.course_router"),  # ✅ 삭제됨
-            ("recommend_router", "1차 향수 추천", "routers.recommend_router"),
-            ("recommend_2nd_router", "2차 향수 추천", "routers.recommend_2nd_router"),
-            ("recommendation_save_router", "추천 결과 저장", "routers.recommendation_save_router")
-        ]
+        # 2. 사용자 인증 라우터
+        try:
+            from routers.auth_router import router as auth_router
+            app.include_router(auth_router)
+            router_status["auth_router"] = "✅ 성공"
+            logger.info("  ✅ 사용자 인증 라우터 등록 완료")
+        except Exception as e:
+            router_status["auth_router"] = f"❌ 실패: {str(e)}"
+            logger.error(f"  ❌ 사용자 인증 라우터 등록 실패: {e}")
 
-        for router_name, description, module_path in recommendation_routers:
-            try:
-                module = __import__(module_path, fromlist=['router'])
-                app.include_router(module.router)
-                router_status[router_name] = "✅ 성공"
-                logger.info(f"  ✅ {description} 라우터 등록 완료")
-            except Exception as e:
-                router_status[router_name] = f"❌ 실패: {str(e)}"
-                logger.error(f"  ❌ {description} 라우터 등록 실패: {e}")
+        # 3. 사용자 관리 라우터
+        try:
+            from routers.user_router import router as user_router
+            app.include_router(user_router)
+            router_status["user_router"] = "✅ 성공"
+            logger.info("  ✅ 사용자 관리 라우터 등록 완료")
+        except Exception as e:
+            router_status["user_router"] = f"❌ 실패: {str(e)}"
+            logger.error(f"  ❌ 사용자 관리 라우터 등록 실패: {e}")
 
-        # 3. 🎭 시향 일기 라우터 (특별 처리)
-        # ✅ 옵션 1: 전체 diary_router 유지 (개별 API만 삭제)
+        # 4. 🎭 시향 일기 라우터 (이미지 업로드 기능 포함)
         try:
             logger.info("🎭 시향 일기 라우터 등록 시도...")
 
@@ -203,24 +192,17 @@ def register_routers():
 
             router_status["diary_router"] = "✅ 성공"
             logger.info("  ✅ 시향 일기 라우터 등록 완료")
-            logger.info("  📝 주의: diary_router.py에서 개별 API 함수 삭제 필요:")
-            logger.info("    - get_diary_detail() 함수 삭제 (/diaries/{diary_id})")
-            logger.info("    - get_emotion_stats() 함수 삭제 (/diaries/stats/emotions)")
+            logger.info("  📸 이미지 업로드 기능 포함")
 
         except ImportError as e:
             router_status["diary_router"] = f"❌ ImportError: {str(e)}"
             logger.error(f"  ❌ 시향 일기 라우터 임포트 실패: {e}")
-            logger.error("    💡 emotion_analyzer 모듈 관련 문제일 가능성이 높습니다")
 
         except Exception as e:
             router_status["diary_router"] = f"❌ Exception: {str(e)}"
             logger.error(f"  ❌ 시향 일기 라우터 등록 실패: {e}")
 
-        # ✅ 옵션 2: 전체 diary_router 비활성화 (아래 주석 해제 시 사용)
-        # router_status["diary_router"] = "⚠️ 수동 비활성화"
-        # logger.info("  ⚠️ 시향 일기 라우터 수동 비활성화됨")
-
-        # 4. 기타 라우터들 (선택적)
+        # 5. 기타 라우터들 (선택적)
         optional_routers = [
             ("emotion_router", "감정 분석 전용", "routers.emotion_router"),
             ("emotion_tagging_router", "감정 태깅", "routers.emotion_tagging_router")
@@ -259,6 +241,8 @@ def register_routers():
             "/perfumes/recommend-cluster",
             "/perfumes/recommend-2nd",
             "/diaries/",
+            "/diaries/upload-image",  # 🆕 이미지 업로드
+            "/diaries/with-image",  # 🆕 일기+이미지 동시 작성
             "/auth/register"
         ]
 
@@ -269,38 +253,14 @@ def register_routers():
             else:
                 logger.warning(f"  ❌ {endpoint} - 누락됨")
 
-        # 🗑️ 삭제된 엔드포인트 확인
-        deleted_endpoints = [
-            "/courses/recommend",
-            "/stores/",
-            "/stores/{brand}"
-        ]
-
-        logger.info("🗑️ 삭제된 엔드포인트 확인:")
-        for endpoint in deleted_endpoints:
-            if any(endpoint in route for route in registered_routes):
-                logger.warning(f"  ⚠️ {endpoint} - 아직 존재함 (추가 삭제 필요)")
-            else:
-                logger.info(f"  ✅ {endpoint} - 성공적으로 삭제됨")
-
-        # 🎭 시향 일기 API 특별 확인
-        diary_endpoints = [ep for ep in registered_routes if "/diaries" in ep]
-        if diary_endpoints:
-            logger.info(f"🎭 시향 일기 API 엔드포인트 ({len(diary_endpoints)}개):")
-            for endpoint in diary_endpoints[:5]:  # 처음 5개만 표시
-                logger.info(f"  📝 {endpoint}")
-            if len(diary_endpoints) > 5:
-                logger.info(f"  ... 외 {len(diary_endpoints) - 5}개")
-
-            # 삭제되어야 할 diary 엔드포인트 확인
-            should_be_deleted = [ep for ep in diary_endpoints
-                                 if "/{diary_id}" in ep or "/stats/emotions" in ep]
-            if should_be_deleted:
-                logger.warning("  ⚠️ 다음 diary 엔드포인트들이 아직 존재합니다:")
-                for ep in should_be_deleted:
-                    logger.warning(f"    🗑️ {ep} - diary_router.py에서 수동 삭제 필요")
+        # 🆕 이미지 관련 엔드포인트 특별 확인
+        image_endpoints = [ep for ep in registered_routes if "/image" in ep or "/upload" in ep]
+        if image_endpoints:
+            logger.info(f"📸 이미지 관련 엔드포인트 ({len(image_endpoints)}개):")
+            for endpoint in image_endpoints:
+                logger.info(f"  📸 {endpoint}")
         else:
-            logger.info("🎭 시향 일기 API 엔드포인트가 등록되지 않음")
+            logger.warning("📸 이미지 관련 엔드포인트가 등록되지 않음")
 
     except Exception as e:
         logger.error(f"❌ 라우터 등록 중 치명적 오류: {e}")
@@ -317,13 +277,14 @@ def read_root():
     return {
         "message": "✅ Whiff API is running!",
         "status": "ok",
-        "version": "1.3.0",
+        "version": "1.4.0",
         "environment": "production" if os.getenv("RENDER") else "development",
         "port": os.getenv("PORT", "8000"),
         "features": [
             "향수 추천 (1차 - AI 감정 클러스터)",
             "향수 추천 (2차 - 노트 기반 정밀 추천)",
             "시향 일기 (AI 감정 분석 포함)",
+            "📸 이미지 업로드 및 처리 기능",  # 🆕 추가
             "사용자 인증 (Firebase)",
             "회원 관리 (가입/탈퇴)"
         ],
@@ -334,12 +295,21 @@ def read_root():
             "❌ /diaries/{diary_id} (특정 일기 조회)",
             "❌ /diaries/stats/emotions (감정 통계)"
         ],
-        "new_features_v1_3": [
-            "🎭 AI 감정 분석 자동 태깅",
-            "🎯 노트 선호도 기반 2차 정밀 추천",
-            "🔄 안전한 폴백 메커니즘",
-            "📊 실시간 감정 통계 분석"
+        "new_features_v1_4": [  # 🆕 버전 정보 업데이트
+            "📸 시향 일기 이미지 업로드 기능",
+            "🖼️ 자동 이미지 리사이징 및 썸네일 생성",
+            "🔒 이미지 파일 검증 및 보안",
+            "📁 정적 파일 서빙 (/uploads 경로)",
+            "🎭 일기+이미지 통합 작성 API"
         ],
+        "image_features": {  # 🆕 이미지 기능 상세 정보
+            "supported_formats": ["JPG", "JPEG", "PNG", "WEBP"],
+            "max_file_size": "10MB",
+            "auto_resize": "1920x1920",
+            "thumbnail_size": "400x400",
+            "upload_endpoint": "/diaries/upload-image",
+            "combined_endpoint": "/diaries/with-image"
+        },
         "docs_url": "/docs",
         "redoc_url": "/redoc"
     }
@@ -353,10 +323,22 @@ def head_root():
 @app.get("/health", summary="헬스 체크", operation_id="get_health_check")
 def health_check():
     try:
+        # 🆕 업로드 디렉토리 상태 확인
+        upload_dir_status = "unknown"
+        try:
+            BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+            UPLOAD_DIR = os.path.join(BASE_DIR, "uploads", "diary_images")
+            if os.path.exists(UPLOAD_DIR):
+                upload_dir_status = "available"
+            else:
+                upload_dir_status = "not_found"
+        except:
+            upload_dir_status = "error"
+
         return {
             "status": "ok",
             "service": "Whiff API",
-            "version": "1.3.0",
+            "version": "1.4.0",
             "environment": "production" if os.getenv("RENDER") else "development",
             "port": os.getenv("PORT", "8000"),
             "uptime": "running",
@@ -364,6 +346,7 @@ def health_check():
                 "1차 추천 (AI 감정 클러스터)",
                 "2차 추천 (노트 기반 정밀)",
                 "시향 일기 (AI 감정 분석)",
+                "📸 이미지 업로드 및 처리",  # 🆕 추가
                 "사용자 인증",
                 "실시간 통계"
             ],
@@ -372,111 +355,122 @@ def health_check():
                 "매장 정보 조회",
                 "특정 일기 상세 조회",
                 "감정 통계 조회"
+            ],
+            "image_system": {  # 🆕 이미지 시스템 상태
+                "upload_dir_status": upload_dir_status,
+                "static_mount": "/uploads",
+                "supported_formats": ["jpg", "jpeg", "png", "webp"],
+                "max_size_mb": 10
+            }
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "service": "Whiff API",
+                "error": str(e)
+            }
+        )
+
+
+# 🆕 이미지 업로드 관련 정보 엔드포인트
+@app.get("/image-info", summary="이미지 업로드 기능 정보")
+def get_image_info():
+    """이미지 업로드 기능의 상세 정보 제공"""
+    try:
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        UPLOAD_DIR = os.path.join(BASE_DIR, "uploads", "diary_images")
+
+        return {
+            "image_upload_enabled": True,
+            "upload_endpoints": {
+                "image_only": "POST /diaries/upload-image",
+                "diary_with_image": "POST /diaries/with-image",
+                "add_to_existing": "PUT /diaries/{diary_id}/add-image"
+            },
+            "supported_formats": ["JPG", "JPEG", "PNG", "WEBP"],
+            "file_size_limit": "10MB",
+            "processing_features": [
+                "자동 리사이징 (최대 1920x1920)",
+                "썸네일 생성 (400x400)",
+                "EXIF 회전 보정",
+                "이미지 최적화"
+            ],
+            "upload_directory": UPLOAD_DIR,
+            "static_url_base": "/uploads/diary_images/",
+            "directory_exists": os.path.exists(UPLOAD_DIR),
+            "security_features": [
+                "파일 확장자 검증",
+                "MIME 타입 검증",
+                "파일 크기 제한",
+                "사용자별 파일 접근 제어"
             ]
         }
     except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return JSONResponse(
-            status_code=503,
-            content={"status": "error", "message": str(e)}
-        )
-
-
-@app.head("/health", operation_id="head_health_check")
-def head_health_check():
-    return JSONResponse(content={})
-
-
-@app.get("/status", summary="서버 상태 정보", operation_id="get_server_status")
-def get_server_status():
-    try:
-        # Firebase 상태 확인
-        firebase_status = None
-        try:
-            from utils.auth_utils import get_firebase_status
-            firebase_status = get_firebase_status()
-        except Exception as e:
-            logger.error(f"Firebase 상태 확인 실패: {e}")
-
-        # SMTP 상태 확인
-        smtp_status = None
-        try:
-            from utils.email_sender import email_sender
-            smtp_valid, smtp_message = email_sender.check_smtp_config()
-            smtp_status = {"configured": smtp_valid, "message": smtp_message}
-        except Exception as e:
-            logger.error(f"SMTP 상태 확인 실패: {e}")
-
         return {
-            "service": "Whiff API",
-            "version": "1.3.0",
-            "status": "running",
-            "environment": "production" if os.getenv("RENDER") else "development",
-            "firebase": firebase_status,
-            "smtp": smtp_status,
-            "features": {
-                "auth": "Firebase Authentication",
-                "database": "SQLite + JSON Files",
-                "ml_model": "TensorFlow (Lazy Loading)",
-                "emotion_ai": "Custom Emotion Analyzer",
-                "deployment": "Render.com",
-                "email": "SMTP (Gmail)"
-            },
-            "active_endpoints": {
-                "perfumes": "향수 정보 및 1차 추천",
-                "perfumes_2nd": "2차 추천 (노트 기반)",
-                "perfumes_cluster": "클러스터 기반 추천",
-                "diaries": "시향 일기 (일부 기능)",
-                "auth": "사용자 인증",
-                "users": "사용자 관리"
-            },
-            "deleted_endpoints": {
-                "courses": "시향 코스 추천 (완전 삭제)",
-                "stores": "매장 정보 (완전 삭제)",
-                "diary_detail": "특정 일기 조회 (개별 삭제)",
-                "emotion_stats": "감정 통계 (개별 삭제)"
-            },
-            "recommendation_system": {
-                "primary_recommendation": {
-                    "endpoint": "/perfumes/recommend-cluster",
-                    "method": "AI 감정 클러스터 모델",
-                    "input": "사용자 선호도 6개 특성",
-                    "output": "클러스터 + 향수 인덱스"
-                },
-                "secondary_recommendation": {
-                    "endpoint": "/perfumes/recommend-2nd",
-                    "method": "노트 기반 정밀 매칭",
-                    "input": "노트 선호도 + 1차 추천 결과",
-                    "output": "정밀 점수 기반 향수 순위"
-                }
-            }
+            "image_upload_enabled": False,
+            "error": str(e)
         }
 
+
+# 🆕 업로드 디렉토리 수동 생성 엔드포인트 (관리용)
+@app.post("/admin/setup-upload-dirs", summary="업로드 디렉토리 설정 (관리자용)")
+def setup_upload_dirs_manual():
+    """업로드 디렉토리를 수동으로 생성합니다 (관리자용)"""
+    try:
+        success = setup_upload_directories()
+        if success:
+            return {
+                "status": "success",
+                "message": "업로드 디렉토리 설정 완료",
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "status": "error",
+                    "message": "업로드 디렉토리 설정 실패"
+                }
+            )
     except Exception as e:
-        logger.error(f"Status check failed: {e}")
         return JSONResponse(
             status_code=500,
-            content={"status": "error", "message": str(e)}
+            content={
+                "status": "error",
+                "message": f"설정 중 오류: {str(e)}"
+            }
         )
 
 
-@app.head("/status", operation_id="head_server_status")
-def head_server_status():
-    return JSONResponse(content={})
+# ─── 예외 처리 ──────────────────────────────────────────────────────────────────
+@app.exception_handler(404)
+async def not_found_handler(request, exc):
+    return JSONResponse(
+        status_code=404,
+        content={
+            "message": "요청하신 리소스를 찾을 수 없습니다.",
+            "path": str(request.url.path),
+            "method": request.method
+        }
+    )
 
 
-# ─── 개발 환경에서만 실행 ──────────────────────────────────────────────────────────
+@app.exception_handler(500)
+async def internal_error_handler(request, exc):
+    logger.error(f"❌ 내부 서버 오류: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "message": "내부 서버 오류가 발생했습니다.",
+            "error": "서버에서 요청을 처리하는 중 문제가 발생했습니다."
+        }
+    )
+
+
 if __name__ == "__main__":
     import uvicorn
 
     port = int(os.getenv("PORT", 8000))
-    logger.info(f"🚀 개발 서버 시작: http://localhost:{port}")
-    logger.info("📚 API 문서: http://localhost:{port}/docs")
-
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=port,
-        reload=True,
-        log_level="info"
-    )
+    uvicorn.run(app, host="0.0.0.0", port=port)
