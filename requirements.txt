@@ -1,84 +1,41 @@
-# requirements.txt - 이미지 업로드 기능 추가된 버전
+# requirements.txt - 최소 필수 패키지 (Render.com 최적화)
 
-# ✅ FastAPI 및 웹 서버
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-python-multipart==0.0.6  # 파일 업로드용
+# 🚀 FastAPI 핵심
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
 
-# ✅ Pydantic (FastAPI 데이터 검증)
-pydantic==2.5.0
-pydantic[email]==2.5.0
+# 📊 데이터 검증
+pydantic>=2.5.0
 
-# 🆕 이미지 처리 관련 라이브러리
-Pillow==10.1.0  # 이미지 처리 (리사이징, 썸네일, EXIF 등)
-aiofiles==23.2.1  # 비동기 파일 I/O
+# 🖼️ 이미지 처리 (핵심)
+Pillow>=10.0.0
+aiofiles>=23.2.0
 
-# ✅ 기계학습 및 데이터 분석
-tensorflow==2.15.0
-scikit-learn==1.3.2
-pandas==2.1.4
-numpy==1.24.3
+# 🤖 AI/ML (최소 버전)
+tensorflow>=2.13.0
+scikit-learn>=1.3.0
+pandas>=2.0.0
+numpy>=1.24.0
 
-# ✅ Firebase 인증
-firebase-admin==6.4.0
-google-cloud-firestore==2.13.1
+# 🔥 Firebase 인증
+firebase-admin>=6.4.0
 
-# ✅ 요청 및 HTTP 클라이언트
-requests==2.31.0
-httpx==0.25.2
+# 🌐 HTTP 요청
+requests>=2.31.0
 
-# ✅ 이메일 발송 (SMTP)
-# Python 내장 smtplib 사용하므로 추가 패키지 불필요
+# 📁 파일 다운로드
+gdown>=4.7.0
 
-# ✅ 로깅 및 시간
-python-dateutil==2.8.2
+# 🔐 보안 (필수)
+cryptography>=41.0.0
 
-# ✅ 환경변수 및 설정
-python-dotenv==1.0.0
+# 🛠️ 유틸리티
+python-dateutil>=2.8.0
+typing-extensions>=4.8.0
 
-# ✅ 유틸리티
-uuid  # Python 내장 모듈
-
-# ✅ 파일 다운로드 (모델 다운로드용)
-gdown==4.7.1
-
-# ✅ 데이터베이스 (SQLite는 Python 내장)
-# sqlite3는 Python 표준 라이브러리에 포함됨
-
-# ✅ JSON 처리 (Python 내장)
-# json은 Python 표준 라이브러리에 포함됨
-
-# ✅ 개발 및 테스트 도구 (선택사항)
-pytest==7.4.3
-pytest-asyncio==0.21.1
-
-# ✅ 보안 관련
-cryptography==41.0.8  # Firebase 인증에 필요
-
-# ✅ 시스템 호환성
-typing-extensions==4.8.0  # Python 3.8+ 호환성
-
-# 🎯 Whiff 프로젝트 특화 요구사항
-# - Render.com 배포 환경 지원
-# - 이미지 업로드 및 처리 기능
-# - AI 기반 향수 추천
-# - Firebase 인증
-# - 감정 분석 기능
-
-# 📝 주의사항:
-# 1. Pillow: 이미지 처리의 핵심 라이브러리
-# 2. aiofiles: FastAPI에서 비동기 파일 업로드 처리용
-# 3. python-multipart: FastAPI의 multipart/form-data 처리용
-# 4. tensorflow: AI 모델 로딩 및 추론용
-# 5. firebase-admin: 사용자 인증 관리용
-
-# 🚀 설치 명령어:
-# pip install -r requirements.txt
-
-# 📦 Docker 환경에서 설치 시:
-# RUN pip install --no-cache-dir -r requirements.txt
-
-# 🔍 특정 패키지 설명:
-# - Pillow: JPG, PNG, WEBP 등 다양한 이미지 형식 지원
-# - aiofiles: 대용량 파일 업로드 시 non-blocking I/O
-# - python-multipart: HTML form data 및 파일 업로드 파싱
+# 📝 참고:
+# - 최소 필수 패키지만 포함
+# - 버전 범위 유연하게 설정
+# - Render.com 환경 최적화
+# - 빌드 시간 단축
