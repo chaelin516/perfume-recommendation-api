@@ -1,41 +1,34 @@
-# requirements.txt - 최소 필수 패키지 (Render.com 최적화)
-
-# 🚀 FastAPI 핵심
+# FastAPI and Web Framework
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 python-multipart>=0.0.6
 
-# 📊 데이터 검증
-pydantic>=2.5.0
+# Validation and Data Models
+pydantic[email]>=2.5.0
+email-validator>=2.0.0
 
-# 🖼️ 이미지 처리 (핵심)
+# Image Processing
 Pillow>=10.0.0
 aiofiles>=23.2.0
 
-# 🤖 AI/ML (최소 버전)
+# AI and Machine Learning
 tensorflow>=2.13.0
 scikit-learn>=1.3.0
 pandas>=2.0.0
 numpy>=1.24.0
 
-# 🔥 Firebase 인증
+# Firebase and Authentication
 firebase-admin>=6.4.0
 
-# 🌐 HTTP 요청
+# HTTP Requests and File Downloads
 requests>=2.31.0
 
-# 📁 파일 다운로드
+# File Downloads from Google Drive
 gdown>=4.7.0
 
-# 🔐 보안 (필수)
+# Security and Cryptography
 cryptography>=41.0.0
 
-# 🛠️ 유틸리티
+# Date and Time Utilities
 python-dateutil>=2.8.0
 typing-extensions>=4.8.0
-
-# 📝 참고:
-# - 최소 필수 패키지만 포함
-# - 버전 범위 유연하게 설정
-# - Render.com 환경 최적화
-# - 빌드 시간 단축
