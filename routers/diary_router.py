@@ -1,635 +1,904 @@
-# routers/auth_router.py - Apple 로그인 포함 완전한 버전
+# routers/diary_router.py - 감정 태그 + 이미지 업로드 완전 통합 버전
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Query, HTTPException, BackgroundTasks, Body, File, UploadFile, Form, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, EmailStr, Field, validator
-from utils.auth_utils import verify_firebase_token_optional, get_firebase_status
-from utils.email_sender import email_sender  # 이메일 발송 기능
-from models.user_model import save_user
-from firebase_admin import auth
-import logging
+from schemas.diary import (
+    DiaryCreateRequest, DiaryResponse, DiaryWithImageCreateRequest,
+    ImageUploadResponse, ImageStatsResponse, ImageDeleteResponse
+)
+from schemas.common import BaseResponse
+from utils.image_utils import (
+    save_uploaded_image, get_image_url, get_thumbnail_url,
+    delete_image_files, get_upload_stats, validate_image_file
+)
+from datetime import datetime, date
+from typing import Optional, List, Dict, Any
 import os
+import json
+import uuid
+import logging
+import asyncio
+import time
+from collections import Counter
+from pydantic import BaseModel, Field
+import re
 
-router = APIRouter(prefix="/auth", tags=["Auth"])
+# 🎭 로거 설정
+logger = logging.getLogger("diary_router")
 
-# 로거 설정
-logger = logging.getLogger(__name__)
+# ✅ 라우터 생성
+router = APIRouter(prefix="/diaries", tags=["Diary"])
 
+# 📂 데이터 파일 경로
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DIARY_PATH = os.path.join(BASE_DIR, "../data/diary_data.json")
 
-# ✅ 회원가입 요청 스키마
-class EmailPasswordRegister(BaseModel):
-    email: EmailStr = Field(..., description="사용자 이메일 주소", example="user@example.com")
-    password: str = Field(..., min_length=6, max_length=50, description="비밀번호 (최소 6자)", example="password123")
-    name: str = Field(..., min_length=1, max_length=50, description="사용자 이름", example="홍길동")
-
-    @validator('password')
-    def validate_password(cls, v):
-        if len(v) < 6:
-            raise ValueError('비밀번호는 최소 6자 이상이어야 합니다.')
-        return v
-
-    @validator('name')
-    def validate_name(cls, v):
-        if not v or not v.strip():
-            raise ValueError('이름은 필수 항목입니다.')
-        return v.strip()
-
-    class Config:
-        schema_extra = {
-            "example": {
-                "email": "user@example.com",
-                "password": "password123",
-                "name": "홍길동"
-            }
-        }
-
-
-# ✅ 이메일 로그인 요청 스키마
-class EmailPasswordLogin(BaseModel):
-    email: EmailStr = Field(..., description="로그인 이메일")
-    password: str = Field(..., description="로그인 비밀번호")
-
-
-# ✅ 구글 로그인 요청 스키마
-class GoogleLoginRequest(BaseModel):
-    id_token: str = Field(..., description="Google ID 토큰")
-
-
-# 🆕 애플 로그인 요청 스키마
-class AppleLoginRequest(BaseModel):
-    id_token: str = Field(..., description="Apple ID 토큰")
-    authorization_code: str = Field(None, description="Apple 인증 코드 (선택)")
-    name: str = Field(None, description="사용자 이름 (첫 로그인시에만 제공)")
-
-    class Config:
-        schema_extra = {
-            "example": {
-                "id_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
-                "authorization_code": "c1234567890",
-                "name": "홍길동"
-            }
-        }
-
-
-# ✅ 비밀번호 재설정 요청 스키마
-class ForgotPasswordRequest(BaseModel):
-    email: EmailStr = Field(..., description="비밀번호 재설정할 이메일")
-
-
-# ✅ 이메일 인증 요청 스키마
-class VerifyEmailRequest(BaseModel):
-    id_token: str = Field(..., description="Firebase ID 토큰")
-
-
-# ✅ 회원가입 응답 스키마
-class RegisterResponse(BaseModel):
-    message: str
-    uid: str
-    email: str
-    email_sent: bool
-    verification_link: str = None
-    smtp_configured: bool = False
-    email_error: str = None
-
-
-# ✅ 이메일 발송 상태 확인 API
-@router.get("/email-status", summary="이메일 발송 상태 확인")
-async def check_email_status():
-    """SMTP 설정 상태와 이메일 발송 가능 여부를 확인합니다."""
-    try:
-        smtp_configured, smtp_message = email_sender.check_smtp_config()
-
-        return JSONResponse(
-            content={
-                "smtp_configured": smtp_configured,
-                "message": smtp_message,
-                "smtp_server": os.getenv('SMTP_SERVER', '미설정'),
-                "smtp_port": os.getenv('SMTP_PORT', '미설정'),
-                "smtp_username": os.getenv('SMTP_USERNAME', '미설정'),
-                "from_email": os.getenv('FROM_EMAIL', '미설정')
-            }
-        )
-    except Exception as e:
-        logger.error(f"❌ 이메일 상태 확인 중 오류: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={
-                "smtp_configured": False,
-                "message": f"이메일 상태 확인 중 오류: {str(e)}"
-            }
-        )
-
-
-# ✅ 회원가입 API
-@router.post(
-    "/register",
-    summary="이메일 회원가입",
-    description="이메일과 비밀번호로 새 계정을 생성합니다.",
-    response_model=RegisterResponse,
-    responses={
-        201: {"description": "회원가입 성공"},
-        400: {"description": "잘못된 요청 (이메일 중복, 약한 비밀번호 등)"},
-        500: {"description": "서버 내부 오류"}
+# 🎯 완전한 룰 기반 감정 분석 사전 정의
+EMOTION_RULES = {
+    "기쁨": {
+        "keywords": [
+            "좋", "훌륭", "향긋", "달콤", "상큼", "깔끔", "사랑", "완벽", "최고", "멋진",
+            "환상적", "놀라운", "아름다운", "우아한", "세련된", "고급스러운", "매력적",
+            "기분좋", "행복", "즐거운", "만족", "감동", "황홀", "반함", "좋아해", "마음에 들",
+            "포근", "따뜻", "편안", "부드러운", "은은한", "우아", "고혹적", "신비로운"
+        ],
+        "tags": ["#happy", "#joyful", "#pleasant", "#nice", "#satisfied", "#lovely"],
+        "base_confidence": 0.7
+    },
+    "설렘": {
+        "keywords": [
+            "설레", "두근", "떨림", "기대", "호기심", "궁금", "신기", "새로운", "특별한",
+            "독특한", "매혹적", "흥미로운", "재미있", "신선한", "생동감", "활기찬",
+            "짜릿", "스릴", "흥분", "가슴이 뛰", "심장이", "떨려"
+        ],
+        "tags": ["#excited", "#curious", "#anticipation", "#thrilling", "#fascinating"],
+        "base_confidence": 0.65
+    },
+    "평온": {
+        "keywords": [
+            "평온", "고요", "잔잔", "차분", "안정", "평화", "조용", "편안", "여유로운",
+            "느긋", "릴렉스", "휴식", "치유", "힐링", "진정", "마음이 편해", "스트레스",
+            "피로가 풀", "숨을 쉬기", "깊게 호흡", "명상", "사색", "생각에 잠기"
+        ],
+        "tags": ["#calm", "#peaceful", "#relaxed", "#healing", "#serene"],
+        "base_confidence": 0.6
+    },
+    "자신감": {
+        "keywords": [
+            "자신감", "당당", "세련", "고급", "품격", "우아", "카리스마", "멋있", "섹시",
+            "매력적", "강렬", "파워풀", "임팩트", "프로페셔널", "성숙한", "어른스러운"
+        ],
+        "tags": ["#confident", "#elegant", "#sophisticated", "#charismatic", "#powerful"],
+        "base_confidence": 0.65
+    },
+    "활력": {
+        "keywords": [
+            "활력", "에너지", "생동감", "활기", "싱그러운", "상쾌", "시원", "청량감",
+            "톡톡", "팝", "활발", "역동적", "젊은", "발랄", "명랑", "생기발랄"
+        ],
+        "tags": ["#energetic", "#fresh", "#vibrant", "#lively", "#dynamic"],
+        "base_confidence": 0.6
+    },
+    "로맨틱": {
+        "keywords": [
+            "로맨틱", "낭만", "사랑", "달콤", "부드러운", "따뜻한", "포근", "감미로운",
+            "달콤쌉쌀", "심쿵", "로맨스", "데이트", "연인", "커플", "달달한"
+        ],
+        "tags": ["#romantic", "#sweet", "#lovely", "#tender", "#affectionate"],
+        "base_confidence": 0.7
+    },
+    "그리움": {
+        "keywords": [
+            "그리움", "향수", "추억", "그립", "옛날", "어릴적", "추상적", "몽환적",
+            "아련", "쓸쓸", "서정적", "감성적", "애틋", "생각나", "기억"
+        ],
+        "tags": ["#nostalgic", "#memory", "#longing", "#sentimental", "#wistful"],
+        "base_confidence": 0.6
     }
-)
-async def register_with_email(request: EmailPasswordRegister):
-    """이메일과 비밀번호로 회원가입"""
-    logger.info(f"📧 회원가입 요청: {request.email}")
+}
 
+# 🌍 상황별 감정 부스터
+CONTEXT_BOOSTERS = {
+    "계절": {
+        "봄": {"기쁨": 0.2, "활력": 0.15, "로맨틱": 0.1},
+        "여름": {"활력": 0.25, "자신감": 0.15, "기쁨": 0.1},
+        "가을": {"그리움": 0.2, "평온": 0.15, "로맨틱": 0.1},
+        "겨울": {"평온": 0.2, "그리움": 0.15, "로맨틱": 0.1}
+    },
+    "시간": {
+        "아침": {"활력": 0.2, "자신감": 0.15},
+        "낮": {"기쁨": 0.15, "활력": 0.1},
+        "저녁": {"로맨틱": 0.2, "평온": 0.15},
+        "밤": {"그리움": 0.2, "평온": 0.15, "로맨틱": 0.1}
+    },
+    "상황": {
+        "데이트": {"로맨틱": 0.3, "설렘": 0.2},
+        "업무": {"자신감": 0.2, "활력": 0.15},
+        "휴식": {"평온": 0.25, "기쁨": 0.1},
+        "외출": {"활력": 0.15, "자신감": 0.1}
+    }
+}
+
+# 🎨 향수 타입별 감정 매핑
+PERFUME_TYPE_EMOTIONS = {
+    "플로럴": ["로맨틱", "기쁨", "평온"],
+    "시트러스": ["활력", "기쁨", "자신감"],
+    "우디": ["자신감", "평온", "그리움"],
+    "바닐라": ["평온", "로맨틱", "그리움"],
+    "머스크": ["자신감", "로맨틱", "평온"],
+    "프루티": ["기쁨", "활력", "설렘"]
+}
+
+
+def load_diary_data():
+    """시향 일기 데이터 로딩"""
+    if os.path.exists(DIARY_PATH):
+        try:
+            with open(DIARY_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            logger.info(f"✅ 시향 일기 데이터 로딩: {len(data)}개")
+            return data
+        except Exception as e:
+            logger.error(f"❌ 시향 일기 데이터 로딩 실패: {e}")
+    return []
+
+
+def save_diary_data(data):
+    """시향 일기 데이터 저장"""
     try:
-        # 1. Firebase에서 사용자 생성
-        logger.info(f"🔥 Firebase 사용자 생성 시작...")
-        user_record = auth.create_user(
-            email=request.email,
-            password=request.password,
-            display_name=request.name,
-            email_verified=False
-        )
-        logger.info(f"✅ Firebase 사용자 생성 완료: uid={user_record.uid}")
+        os.makedirs(os.path.dirname(DIARY_PATH), exist_ok=True)
+        with open(DIARY_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        logger.info(f"✅ 시향 일기 데이터 저장: {len(data)}개")
+    except Exception as e:
+        logger.error(f"❌ 시향 일기 데이터 저장 실패: {e}")
 
-        # 2. 이메일 인증 링크 생성
-        logger.info(f"📧 이메일 인증 링크 생성 시작...")
-        try:
-            verification_link = auth.generate_email_verification_link(request.email)
-            logger.info(f"✅ 이메일 인증 링크 생성 완료")
-        except Exception as e:
-            logger.error(f"❌ 이메일 인증 링크 생성 실패: {e}")
-            verification_link = None
 
-        # 3. 사용자 정보 DB 저장
-        logger.info(f"💾 사용자 정보 DB 저장 시작...")
-        try:
-            await save_user(
-                uid=user_record.uid,
-                email=request.email,
-                name=request.name
-            )
-            logger.info(f"✅ 사용자 정보 DB 저장 완료")
-        except Exception as e:
-            logger.error(f"❌ 사용자 정보 저장 실패: {e}")
+def get_default_user():
+    """기본 사용자 정보"""
+    return {
+        "uid": "anonymous",
+        "name": "익명 사용자",
+        "email": "anonymous@example.com",
+        "picture": ""
+    }
 
-        # 4. SMTP 설정 확인
-        logger.info(f"📧 SMTP 설정 확인...")
-        smtp_configured, smtp_message = email_sender.check_smtp_config()
-        logger.info(f"  - SMTP 설정: {'✅ 완료' if smtp_configured else '❌ 미완료'}")
 
-        # 5. 실제 이메일 발송 시도
-        email_sent = False
-        email_error = None
+async def rule_based_emotion_analysis(content: str, perfume_name: str = "") -> dict:
+    """완전한 룰 기반 감정 분석"""
+    try:
+        if not content or not content.strip():
+            return {
+                "success": False,
+                "primary_emotion": "중립",
+                "confidence": 0.3,
+                "emotion_tags": ["#neutral"],
+                "analysis_method": "rule_based"
+            }
 
-        if smtp_configured and verification_link:
-            logger.info(f"📮 이메일 발송 시작...")
-            try:
-                email_sent, email_message = email_sender.send_verification_email(
-                    to_email=request.email,
-                    verification_link=verification_link,
-                    user_name=request.name
-                )
+        text = f"{content} {perfume_name}".lower()
+        emotion_scores = {}
 
-                if email_sent:
-                    logger.info(f"✅ 이메일 발송 성공: {email_message}")
-                else:
-                    logger.error(f"❌ 이메일 발송 실패: {email_message}")
-                    email_error = email_message
+        # 각 감정별로 점수 계산
+        for emotion, config in EMOTION_RULES.items():
+            score = config["base_confidence"]
+            keyword_matches = []
 
-            except Exception as e:
-                logger.error(f"❌ 이메일 발송 중 예외: {str(e)}")
-                email_sent = False
-                email_error = f"이메일 발송 예외: {str(e)}"
-        else:
-            if not smtp_configured:
-                email_error = "SMTP 설정이 완료되지 않았습니다."
-                logger.warning(f"⚠️ {email_error}")
-            if not verification_link:
-                email_error = "이메일 인증 링크 생성에 실패했습니다."
-                logger.warning(f"⚠️ {email_error}")
+            for keyword in config["keywords"]:
+                if keyword in text:
+                    keyword_matches.append(keyword)
+                    score += 0.1
 
-        # 6. 응답 생성
-        response_data = {
-            "message": "회원가입이 완료되었습니다." + (
-                " 이메일을 확인해서 인증을 완료해주세요." if email_sent
-                else " 이메일 발송에 실패했습니다."
-            ),
-            "uid": user_record.uid,
-            "email": request.email,
-            "email_sent": email_sent,
-            "smtp_configured": smtp_configured
+            if keyword_matches:
+                emotion_scores[emotion] = {
+                    "confidence": min(score, 1.0),
+                    "matched_keywords": keyword_matches
+                }
+
+        # 감정이 감지되지 않으면 중립 반환
+        if not emotion_scores:
+            return {
+                "success": False,
+                "primary_emotion": "중립",
+                "confidence": 0.3,
+                "emotion_tags": ["#neutral"],
+                "analysis_method": "rule_based"
+            }
+
+        # 주요 감정 결정
+        primary_emotion = max(emotion_scores.keys(), key=lambda e: emotion_scores[e]["confidence"])
+        confidence = emotion_scores[primary_emotion]["confidence"]
+
+        # 감정 태그 생성 (상위 3개 감정)
+        top_emotions = sorted(emotion_scores.items(), key=lambda x: x[1]["confidence"], reverse=True)[:3]
+        emotion_tags = []
+        for emotion, data in top_emotions:
+            emotion_tags.extend(EMOTION_RULES[emotion]["tags"][:2])
+
+        # 상황 감지
+        context = {
+            "계절": None,
+            "시간": None,
+            "상황": None
         }
 
-        # 이메일 발송 실패 시 추가 정보 제공
-        if not email_sent:
-            response_data["email_error"] = email_error
-            if verification_link:
-                response_data["verification_link"] = verification_link
-                response_data["manual_verification_note"] = "위 링크를 브라우저에서 직접 열어 인증할 수 있습니다."
+        # 계절 감지
+        season_keywords = {
+            "봄": ["봄", "spring", "꽃", "벚꽃", "새싹"],
+            "여름": ["여름", "summer", "더위", "바다", "시원"],
+            "가을": ["가을", "fall", "autumn", "단풍", "쌀쌀"],
+            "겨울": ["겨울", "winter", "눈", "추위", "따뜻"]
+        }
 
-        logger.info(f"🎉 회원가입 처리 완료")
+        for season, keywords in season_keywords.items():
+            if any(keyword in text for keyword in keywords):
+                context["계절"] = season
+                break
 
-        return JSONResponse(
-            status_code=201,
-            content=response_data
-        )
+        # 향수 타입 감지
+        perfume_type = "기타"
+        type_keywords = {
+            "플로럴": ["꽃", "플로럴", "장미", "자스민", "라벤더"],
+            "시트러스": ["레몬", "오렌지", "자몽", "시트러스", "상큼"],
+            "우디": ["나무", "우디", "삼나무", "산달우드"],
+            "바닐라": ["바닐라", "달콤", "vanilla"],
+            "머스크": ["머스크", "musk", "관능"],
+            "프루티": ["과일", "프루티", "사과", "배", "복숭아"]
+        }
 
-    except auth.EmailAlreadyExistsError:
-        logger.warning(f"⚠️ 이미 존재하는 이메일: {request.email}")
-        raise HTTPException(
-            status_code=400,
-            detail="이미 존재하는 이메일 주소입니다."
-        )
-    except auth.WeakPasswordError as e:
-        logger.warning(f"⚠️ 약한 비밀번호: {e}")
-        raise HTTPException(
-            status_code=400,
-            detail="비밀번호가 너무 약습니다. 최소 6자 이상의 비밀번호를 사용해주세요."
-        )
-    except auth.InvalidEmailError:
-        logger.warning(f"⚠️ 잘못된 이메일 형식: {request.email}")
-        raise HTTPException(
-            status_code=400,
-            detail="올바른 이메일 형식이 아닙니다."
-        )
+        for ptype, keywords in type_keywords.items():
+            if any(keyword in text for keyword in keywords):
+                perfume_type = ptype
+                break
+
+        return {
+            "success": True,
+            "primary_emotion": primary_emotion,
+            "confidence": round(confidence, 3),
+            "emotion_tags": emotion_tags,
+            "analysis_method": "rule_based",
+            "emotion_scores": {k: round(v["confidence"], 3) for k, v in emotion_scores.items()},
+            "context_detected": context,
+            "perfume_type": perfume_type,
+            "matched_keywords_summary": {
+                emotion: data["matched_keywords"]
+                for emotion, data in emotion_scores.items()
+            }
+        }
+
     except Exception as e:
-        logger.error(f"❌ 회원가입 중 예외 발생: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"회원가입 중 오류가 발생했습니다: {str(e)}"
-        )
+        logger.error(f"❌ 룰 기반 감정 분석 오류: {e}")
+        return {
+            "success": False,
+            "primary_emotion": "중립",
+            "confidence": 0.3,
+            "emotion_tags": ["#neutral"],
+            "analysis_method": "error_fallback",
+            "error": str(e)
+        }
 
 
-# ✅ 이메일 로그인 API
-@router.post("/login", summary="이메일/비밀번호 로그인")
-async def login_with_email(request: EmailPasswordLogin):
-    try:
-        user_record = auth.get_user_by_email(request.email)
-        return JSONResponse(
-            content={
-                "message": "사용자 확인 완료. iOS 앱에서 Firebase 로그인을 진행하세요.",
-                "user_exists": True,
-                "email_verified": user_record.email_verified,
-                "uid": user_record.uid
+# 전역 데이터 로딩
+diary_data = load_diary_data()
+
+
+# ================================
+# ✅ 기본 시향 일기 API (감정 태그 포함)
+# ================================
+
+@router.post("/", summary="📝 시향 일기 작성 (감정 태그 포함)")
+async def create_diary_entry(
+        entry: DiaryCreateRequest = Body(
+            ...,
+            example={
+                "user_id": "john_doe",
+                "perfume_name": "Chanel No.5",
+                "content": "오늘은 봄바람이 느껴지는 향수와 산책했어요.",
+                "is_public": False,
+                "emotion_tags": ["calm", "spring", "happy"]
             }
         )
-    except auth.UserNotFoundError:
-        raise HTTPException(status_code=404, detail="존재하지 않는 사용자입니다.")
-    except Exception as e:
-        logging.error(f"Login error: {e}")
-        raise HTTPException(status_code=500, detail="로그인 확인 중 오류가 발생했습니다.")
+):
+    """
+    ✅ 시향 일기 작성 (텍스트 + 감정 태그)
 
+    **감정 태그 기능:**
+    - 사용자가 직접 입력한 감정 태그
+    - AI가 자동으로 분석한 감정 태그
+    - 두 가지가 자동으로 병합되어 저장됨
 
-# ✅ 구글 로그인 API
-@router.post("/google-login", summary="구글 로그인")
-async def google_login(request: GoogleLoginRequest):
+    **지원되는 감정:**
+    - 기쁨, 설렘, 평온, 자신감, 활력, 로맨틱, 그리움
+
+    **자동 분석 기능:**
+    - 내용 기반 감정 분석
+    - 상황/계절 감지
+    - 향수 타입 추천
+    """
     try:
-        logger.info(f"🔍 Google 로그인 시도")
+        user = get_default_user()
+        user_id = entry.user_id if entry.user_id else "anonymous_user"
 
-        decoded_token = auth.verify_id_token(request.id_token)
-        uid = decoded_token["uid"]
-        email = decoded_token.get("email")
-        name = decoded_token.get("name")
-        picture = decoded_token.get("picture")
+        now = datetime.now().isoformat()
+        diary_id = str(uuid.uuid4())
 
-        logger.info(f"✅ Google 토큰 검증 성공")
-        logger.info(f"  - UID: {uid}")
-        logger.info(f"  - Email: {email}")
-        logger.info(f"  - Name: {name}")
+        logger.info(f"📝 새 일기 작성 (감정 태그 포함): {user_id} - {entry.perfume_name}")
+        logger.info(f"👤 사용자 감정 태그: {entry.emotion_tags}")
 
-        await save_user(uid=uid, email=email, name=name, picture=picture)
-
-        logger.info(f"✅ Google 로그인 완료: {name} ({email})")
-
-        return JSONResponse(
-            content={
-                "message": "구글 로그인이 완료되었습니다.",
-                "user": {
-                    "uid": uid,
-                    "email": email,
-                    "name": name,
-                    "picture": picture,
-                    "provider": "google"
-                }
-            }
-        )
-    except auth.InvalidIdTokenError:
-        logger.error("❌ 유효하지 않은 구글 토큰")
-        raise HTTPException(status_code=401, detail="유효하지 않은 구글 토큰입니다.")
-    except Exception as e:
-        logger.error(f"❌ Google 로그인 중 오류: {e}")
-        raise HTTPException(status_code=500, detail="구글 로그인 중 오류가 발생했습니다.")
-
-
-# 🆕 애플 로그인 API
-@router.post("/apple-login", summary="Apple 로그인")
-async def apple_login(request: AppleLoginRequest):
-    """Apple Sign In을 통한 로그인 처리"""
-    try:
-        logger.info(f"🍎 Apple 로그인 시도")
-
-        # Firebase에서 Apple ID 토큰 검증
-        decoded_token = auth.verify_id_token(request.id_token)
-        uid = decoded_token["uid"]
-        email = decoded_token.get("email")
-
-        # Apple에서는 이름이 최초 로그인 시에만 제공됨
-        # 1순위: 요청에서 받은 name
-        # 2순위: 토큰에서 받은 name
-        # 3순위: 기본값
-        name = request.name or decoded_token.get("name") or "Apple 사용자"
-
-        # Apple은 사진을 제공하지 않음
-        picture = None
-
-        logger.info(f"✅ Apple 토큰 검증 성공")
-        logger.info(f"  - UID: {uid}")
-        logger.info(f"  - Email: {email}")
-        logger.info(f"  - Name: {name}")
-
-        # 기존 구글 로그인과 동일한 방식으로 사용자 정보 저장
-        await save_user(
-            uid=uid,
-            email=email,
-            name=name,
-            picture=picture
-        )
-
-        logger.info(f"✅ Apple 로그인 완료: {name} ({email})")
-
-        return JSONResponse(
-            content={
-                "message": "Apple 로그인이 완료되었습니다.",
-                "user": {
-                    "uid": uid,
-                    "email": email,
-                    "name": name,
-                    "picture": picture,
-                    "provider": "apple"
-                }
-            }
-        )
-
-    except auth.InvalidIdTokenError:
-        logger.error("❌ 유효하지 않은 Apple 토큰")
-        raise HTTPException(status_code=401, detail="유효하지 않은 Apple 토큰입니다.")
-    except Exception as e:
-        logger.error(f"❌ Apple 로그인 중 오류: {e}")
-        raise HTTPException(status_code=500, detail="Apple 로그인 중 오류가 발생했습니다.")
-
-
-# ✅ 로그아웃 API
-@router.post("/logout", summary="로그아웃")
-async def logout(user=Depends(verify_firebase_token_optional)):
-    try:
-        auth.revoke_refresh_tokens(user["uid"])
-        logger.info(f"✅ 로그아웃 완료: {user['uid']}")
-        return JSONResponse(content={"message": "로그아웃이 완료되었습니다.", "uid": user["uid"]})
-    except Exception as e:
-        logger.error(f"Logout error: {e}")
-        raise HTTPException(status_code=500, detail="로그아웃 중 오류가 발생했습니다.")
-
-
-# ✅ 이메일 인증 재발송 API
-@router.post("/resend-verification", summary="이메일 인증 재발송")
-async def resend_verification_email(request: VerifyEmailRequest):
-    logger.info(f"🔄 이메일 인증 재발송 요청")
-
-    try:
-        # ID 토큰에서 사용자 정보 추출
-        decoded_token = auth.verify_id_token(request.id_token)
-        email = decoded_token.get("email")
-        name = decoded_token.get("name", "사용자")
-        uid = decoded_token.get("uid")
-
-        logger.info(f"  - 사용자: {name} ({email})")
-
-        if not email:
-            raise HTTPException(
-                status_code=400,
-                detail="토큰에서 이메일 정보를 찾을 수 없습니다."
-            )
-
-        # 이메일 인증 링크 생성
-        verification_link = auth.generate_email_verification_link(email)
-
-        # SMTP 설정 확인 및 이메일 발송
-        smtp_configured, smtp_message = email_sender.check_smtp_config()
-
-        if smtp_configured:
-            email_sent, email_message = email_sender.send_verification_email(
-                to_email=email,
-                verification_link=verification_link,
-                user_name=name
-            )
-
-            if email_sent:
-                logger.info(f"✅ 이메일 재발송 성공")
-                return JSONResponse(
-                    content={
-                        "message": "인증 이메일이 재발송되었습니다.",
-                        "email": email,
-                        "email_sent": True
-                    }
+        # 룰 기반 감정 분석
+        initial_analysis = None
+        if entry.content and entry.content.strip():
+            try:
+                initial_analysis = await asyncio.wait_for(
+                    rule_based_emotion_analysis(entry.content, entry.perfume_name),
+                    timeout=5.0
                 )
+                logger.info(
+                    f"🎯 감정 분석 결과: {initial_analysis.get('primary_emotion')} ({initial_analysis.get('confidence')})")
+            except Exception as e:
+                logger.error(f"❌ 감정 분석 오류: {e}")
+                initial_analysis = {
+                    "success": False,
+                    "primary_emotion": "중립",
+                    "confidence": 0.3,
+                    "emotion_tags": ["#neutral"],
+                    "analysis_method": "error"
+                }
+
+        # 일기 데이터 생성
+        diary = {
+            "id": diary_id,
+            "user_id": user_id,
+            "user_name": user_id,
+            "user_profile_image": user.get("picture", ""),
+            "perfume_id": f"perfume_{entry.perfume_name.lower().replace(' ', '_')}",
+            "perfume_name": entry.perfume_name,
+            "brand": "Unknown Brand",
+            "content": entry.content or "",
+            "tags": entry.emotion_tags or [],  # 🎯 사용자 입력 태그
+            "likes": 0,
+            "comments": 0,
+            "is_public": entry.is_public,
+            "created_at": now,
+            "updated_at": now,
+
+            # 🆕 이미지 관련 필드들 (기본값)
+            "image_url": None,
+            "thumbnail_url": None,
+            "image_filename": None,
+            "image_metadata": {},
+
+            # 🎯 감정 분석 정보
+            "emotion_analysis": initial_analysis,
+            "primary_emotion": initial_analysis.get("primary_emotion", "중립") if initial_analysis else "중립",
+            "emotion_confidence": initial_analysis.get("confidence", 0.0) if initial_analysis else 0.0,
+            "emotion_tags_auto": initial_analysis.get("emotion_tags", []) if initial_analysis else [],
+            "emotion_analysis_status": "completed" if initial_analysis and initial_analysis.get(
+                "success") else "failed",
+            "analysis_method": "rule_based"
+        }
+
+        # 🎯 태그 병합 (사용자 입력 태그 + 자동 분석 태그)
+        user_tags = entry.emotion_tags or []
+        auto_tags = initial_analysis.get("emotion_tags", []) if initial_analysis else []
+
+        # 중복 제거하여 병합
+        merged_tags = list(set(user_tags + auto_tags))
+        diary["tags"] = merged_tags
+
+        logger.info(f"🏷️ 최종 태그: {merged_tags}")
+
+        # 저장
+        diary_data.append(diary)
+        save_diary_data(diary_data)
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "message": "✅ 시향 일기가 성공적으로 저장되었습니다.",
+                "diary_id": diary_id,
+                "user_id": user_id,
+                "has_image": False,
+                "emotion_analysis": {
+                    "status": diary["emotion_analysis_status"],
+                    "method": "rule_based",
+                    "primary_emotion": diary["primary_emotion"],
+                    "confidence": diary["emotion_confidence"],
+                    "user_emotion_tags": user_tags,
+                    "auto_emotion_tags": auto_tags,
+                    "merged_tags": merged_tags,
+                    "context_detected": initial_analysis.get("context_detected", {}) if initial_analysis else {},
+                    "perfume_type": initial_analysis.get("perfume_type", "기타") if initial_analysis else "기타"
+                }
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"❌ 일기 저장 오류: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"message": f"일기 저장 중 오류: {str(e)}"}
+        )
+
+
+# ================================
+# 🆕 이미지 업로드 관련 API들
+# ================================
+
+@router.post("/upload-image", summary="📸 이미지만 업로드")
+async def upload_diary_image(
+        request: Request,
+        user_id: str = Form(..., description="사용자 ID"),
+        image: UploadFile = File(..., description="업로드할 이미지 파일")
+):
+    """
+    이미지 파일만 업로드하는 API
+
+    - JPG, PNG, WEBP 지원
+    - 최대 10MB
+    - 자동 리사이징 및 썸네일 생성
+    """
+    try:
+        # 이미지 파일 검증
+        is_valid, message = validate_image_file(image)
+        if not is_valid:
+            return ImageUploadResponse(
+                success=False,
+                message=message,
+                image_url=None,
+                thumbnail_url=None,
+                filename=None
+            )
+
+        # 이미지 저장 및 처리
+        success, result, metadata = await save_uploaded_image(image, user_id)
+
+        if not success:
+            return ImageUploadResponse(
+                success=False,
+                message=result,
+                image_url=None,
+                thumbnail_url=None,
+                filename=None
+            )
+
+        # URL 생성
+        base_url = str(request.base_url)
+        image_url = get_image_url(result, base_url)
+        thumbnail_url = get_thumbnail_url(result, base_url)
+
+        return ImageUploadResponse(
+            success=True,
+            message="이미지 업로드 성공",
+            image_url=image_url,
+            thumbnail_url=thumbnail_url,
+            filename=result,
+            file_size=metadata.get("file_size") if metadata else None,
+            image_metadata=metadata
+        )
+
+    except Exception as e:
+        logger.error(f"❌ 이미지 업로드 오류: {e}")
+        return ImageUploadResponse(
+            success=False,
+            message=f"이미지 업로드 중 오류: {str(e)}",
+            image_url=None,
+            thumbnail_url=None,
+            filename=None
+        )
+
+
+@router.post("/with-image", summary="📝📸 일기 + 이미지 동시 작성 (감정 태그 포함)")
+async def create_diary_with_image(
+        request: Request,
+        user_id: str = Form(..., description="사용자 ID"),
+        perfume_name: str = Form(..., description="향수명"),
+        content: str = Form(None, description="일기 내용"),
+        is_public: bool = Form(..., description="공개 여부"),
+        emotion_tags: str = Form("[]", description="감정 태그 (JSON 배열 문자열)"),
+        image: UploadFile = File(..., description="첨부할 이미지")
+):
+    """
+    ✅ 시향 일기 + 이미지 + 감정 태그 모든 기능 통합 API
+
+    **주요 기능:**
+    - 텍스트 일기 작성
+    - 이미지 업로드 및 처리
+    - 사용자 감정 태그 입력
+    - AI 자동 감정 분석
+    - 태그 자동 병합
+
+    **감정 태그 사용법:**
+    - emotion_tags: ["happy", "spring", "romantic"] 형태로 전송
+    - 사용자 태그 + AI 분석 태그가 자동 병합됨
+    """
+    try:
+        # 1. emotion_tags JSON 파싱
+        try:
+            import json as py_json
+            parsed_tags = py_json.loads(emotion_tags) if emotion_tags else []
+            logger.info(f"🏷️ 사용자 감정 태그: {parsed_tags}")
+        except:
+            parsed_tags = []
+            logger.warning("⚠️ 감정 태그 파싱 실패, 빈 배열로 처리")
+
+        logger.info(f"📝📸 일기+이미지+감정태그 작성: {user_id} - {perfume_name}")
+
+        # 2. 이미지 업로드 처리
+        image_url = None
+        thumbnail_url = None
+        image_filename = None
+        image_metadata = {}
+
+        if image:
+            is_valid, validation_message = validate_image_file(image)
+            if is_valid:
+                success, result, metadata = await save_uploaded_image(image, user_id)
+                if success:
+                    base_url = str(request.base_url)
+                    image_url = get_image_url(result, base_url)
+                    thumbnail_url = get_thumbnail_url(result, base_url)
+                    image_filename = result
+                    image_metadata = metadata or {}
+                    logger.info(f"✅ 이미지 저장 성공: {result}")
+                else:
+                    logger.warning(f"⚠️ 이미지 저장 실패: {result}")
             else:
-                logger.error(f"❌ 이메일 재발송 실패: {email_message}")
-                return JSONResponse(
-                    status_code=500,
-                    content={
-                        "message": "이메일 발송에 실패했습니다.",
-                        "error": email_message,
-                        "verification_link": verification_link,
-                        "manual_note": "위 링크를 브라우저에서 직접 열어 인증할 수 있습니다."
-                    }
-                )
-        else:
-            logger.warning(f"⚠️ SMTP 설정 미완료: {smtp_message}")
-            return JSONResponse(
-                content={
-                    "message": "SMTP 설정이 완료되지 않아 이메일을 발송할 수 없습니다.",
-                    "smtp_error": smtp_message,
-                    "verification_link": verification_link,
-                    "note": "위 링크를 브라우저에서 직접 열어 인증할 수 있습니다."
-                }
-            )
+                logger.warning(f"⚠️ 이미지 검증 실패: {validation_message}")
 
-    except auth.InvalidIdTokenError:
-        logger.error(f"❌ 유효하지 않은 토큰")
-        raise HTTPException(
-            status_code=401,
-            detail="유효하지 않은 토큰입니다."
-        )
-    except Exception as e:
-        logger.error(f"❌ 이메일 재발송 중 오류: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="이메일 인증 재발송 중 오류가 발생했습니다."
-        )
+        # 3. 시향 일기 작성
+        user = get_default_user()
+        now = datetime.now().isoformat()
+        diary_id = str(uuid.uuid4())
 
-
-# ✅ 비밀번호 재설정 이메일 발송 API
-@router.post(
-    "/forgot-password",
-    summary="비밀번호 재설정 이메일 발송",
-    description="비밀번호를 잊어버린 사용자에게 재설정 이메일을 발송합니다.",
-    responses={
-        200: {"description": "비밀번호 재설정 이메일 발송 성공"},
-        404: {"description": "존재하지 않는 이메일"},
-        500: {"description": "서버 내부 오류"}
-    }
-)
-async def forgot_password(request: ForgotPasswordRequest):
-    """비밀번호 재설정 이메일 발송"""
-    logger.info(f"🔑 비밀번호 재설정 요청: {request.email}")
-
-    try:
-        # 1. 사용자 존재 확인
-        try:
-            user_record = auth.get_user_by_email(request.email)
-            logger.info(f"✅ 사용자 확인 완료: {user_record.uid}")
-        except auth.UserNotFoundError:
-            logger.warning(f"⚠️ 존재하지 않는 사용자: {request.email}")
-            raise HTTPException(
-                status_code=404,
-                detail="해당 이메일로 가입된 계정을 찾을 수 없습니다."
-            )
-
-        # 2. 비밀번호 재설정 링크 생성
-        try:
-            reset_link = auth.generate_password_reset_link(request.email)
-            logger.info(f"✅ 비밀번호 재설정 링크 생성 완료")
-        except Exception as e:
-            logger.error(f"❌ 비밀번호 재설정 링크 생성 실패: {e}")
-            raise HTTPException(
-                status_code=500,
-                detail="비밀번호 재설정 링크 생성에 실패했습니다."
-            )
-
-        # 3. SMTP 설정 확인 및 이메일 발송
-        smtp_configured, smtp_message = email_sender.check_smtp_config()
-        email_sent = False
-        email_error = None
-
-        if smtp_configured:
+        # 4. 룰 기반 감정 분석
+        initial_analysis = None
+        if content and content.strip():
             try:
-                email_sent, email_message = email_sender.send_password_reset_email(
-                    to_email=request.email,
-                    reset_link=reset_link,
-                    user_name=user_record.display_name or "사용자"
+                initial_analysis = await asyncio.wait_for(
+                    rule_based_emotion_analysis(content, perfume_name),
+                    timeout=5.0
                 )
-
-                if email_sent:
-                    logger.info(f"✅ 비밀번호 재설정 이메일 발송 성공")
-                else:
-                    logger.error(f"❌ 비밀번호 재설정 이메일 발송 실패: {email_message}")
-                    email_error = email_message
-
+                logger.info(f"🎯 감정 분석 결과: {initial_analysis.get('primary_emotion')}")
             except Exception as e:
-                logger.error(f"❌ 비밀번호 재설정 이메일 발송 중 예외: {str(e)}")
-                email_sent = False
-                email_error = f"이메일 발송 예외: {str(e)}"
-        else:
-            email_error = f"SMTP 설정 미완료: {smtp_message}"
-            logger.warning(f"⚠️ {email_error}")
-
-        # 4. 응답 생성
-        if email_sent:
-            return JSONResponse(
-                content={
-                    "message": "비밀번호 재설정 이메일이 발송되었습니다. 이메일을 확인해주세요.",
-                    "email": request.email,
-                    "email_sent": True,
-                    "note": "이메일이 도착하지 않으면 스팸 폴더를 확인해주세요."
+                logger.error(f"❌ 감정 분석 오류: {e}")
+                initial_analysis = {
+                    "success": False,
+                    "primary_emotion": "중립",
+                    "confidence": 0.3,
+                    "emotion_tags": ["#neutral"],
+                    "analysis_method": "error"
                 }
-            )
-        else:
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "message": "비밀번호 재설정 이메일 발송에 실패했습니다.",
-                    "email": request.email,
-                    "email_sent": False,
-                    "error": email_error,
-                    "reset_link": reset_link,
-                    "manual_note": "위 링크를 브라우저에서 직접 열어 비밀번호를 재설정할 수 있습니다."
+
+        # 5. 일기 데이터 생성 (이미지 + 감정 태그 포함)
+        diary = {
+            "id": diary_id,
+            "user_id": user_id,
+            "user_name": user_id,
+            "user_profile_image": user.get("picture", ""),
+            "perfume_id": f"perfume_{perfume_name.lower().replace(' ', '_')}",
+            "perfume_name": perfume_name,
+            "brand": "Unknown Brand",
+            "content": content or "",
+            "tags": parsed_tags or [],  # 🎯 사용자 입력 태그
+            "likes": 0,
+            "comments": 0,
+            "is_public": is_public,
+            "created_at": now,
+            "updated_at": now,
+
+            # 🆕 이미지 관련 필드들
+            "image_url": image_url,
+            "thumbnail_url": thumbnail_url,
+            "image_filename": image_filename,
+            "image_metadata": image_metadata,
+
+            # 🎯 감정 분석 정보
+            "emotion_analysis": initial_analysis,
+            "primary_emotion": initial_analysis.get("primary_emotion", "중립") if initial_analysis else "중립",
+            "emotion_confidence": initial_analysis.get("confidence", 0.0) if initial_analysis else 0.0,
+            "emotion_tags_auto": initial_analysis.get("emotion_tags", []) if initial_analysis else [],
+            "emotion_analysis_status": "completed" if initial_analysis and initial_analysis.get(
+                "success") else "failed",
+            "analysis_method": "rule_based"
+        }
+
+        # 🎯 태그 병합 (사용자 입력 태그 + 자동 분석 태그)
+        user_tags = parsed_tags or []
+        auto_tags = initial_analysis.get("emotion_tags", []) if initial_analysis else []
+        merged_tags = list(set(user_tags + auto_tags))
+        diary["tags"] = merged_tags
+
+        logger.info(f"🏷️ 최종 병합 태그: {merged_tags}")
+
+        # 6. 저장
+        diary_data.append(diary)
+        save_diary_data(diary_data)
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "message": "✅ 시향 일기 + 이미지 + 감정 태그 저장 성공",
+                "diary_id": diary_id,
+                "user_id": user_id,
+                "image_uploaded": image_url is not None,
+                "image_url": image_url,
+                "thumbnail_url": thumbnail_url,
+                "emotion_analysis": {
+                    "status": diary["emotion_analysis_status"],
+                    "method": "rule_based",
+                    "primary_emotion": diary["primary_emotion"],
+                    "confidence": diary["emotion_confidence"],
+                    "user_emotion_tags": user_tags,
+                    "auto_emotion_tags": auto_tags,
+                    "merged_tags": merged_tags
                 }
-            )
+            }
+        )
 
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"❌ 비밀번호 재설정 처리 중 오류: {e}")
-        raise HTTPException(
+        logger.error(f"❌ 일기+이미지+태그 저장 오류: {e}")
+        return JSONResponse(
             status_code=500,
-            detail=f"비밀번호 재설정 처리 중 오류가 발생했습니다: {str(e)}"
+            content={"message": f"저장 중 오류: {str(e)}"}
         )
 
 
-# ✅ 테스트 이메일 발송 API
-@router.post("/send-test-email", summary="테스트 이메일 발송")
-async def send_test_email(email: EmailStr):
-    """개발/디버깅용 테스트 이메일을 발송합니다."""
-    logger.info(f"🧪 테스트 이메일 발송 요청: {email}")
+# ================================
+# ✅ 조회 API들 (감정 태그 필터 포함)
+# ================================
 
+@router.get("/", summary="📋 시향 일기 목록 조회 (감정 태그 필터 포함)")
+async def get_diary_list(
+        public: Optional[bool] = Query(None, description="공개 여부 필터"),
+        page: Optional[int] = Query(1, description="페이지 번호"),
+        size: Optional[int] = Query(10, description="페이지 크기"),
+        keyword: Optional[str] = Query(None, description="검색 키워드"),
+        has_image: Optional[bool] = Query(None, description="이미지 포함 여부 필터"),
+        emotion: Optional[str] = Query(None, description="감정 필터 (기쁨, 설렘, 평온, 자신감, 활력, 로맨틱, 그리움)"),
+        emotion_tag: Optional[str] = Query(None, description="감정 태그 필터 (예: happy, calm, romantic)")
+):
+    """
+    ✅ 시향 일기 목록 조회 (모든 필터 지원)
+
+    **필터 옵션:**
+    - public: 공개/비공개 필터
+    - has_image: 이미지 포함 여부
+    - emotion: 주요 감정 필터
+    - emotion_tag: 특정 감정 태그 필터
+    - keyword: 내용/향수명 검색
+
+    **감정 태그 예시:**
+    - happy, calm, romantic, energetic, confident 등
+    """
     try:
-        # 테스트 링크 생성
-        test_link = "https://example.com/test-verification"
+        filtered_data = diary_data.copy()
 
-        # 이메일 발송
-        email_sent, message = email_sender.send_verification_email(
-            to_email=email,
-            verification_link=test_link,
-            user_name="테스트 사용자"
-        )
+        # 1. 공개 여부 필터
+        if public is not None:
+            filtered_data = [d for d in filtered_data if d.get("is_public") == public]
 
-        return JSONResponse(
-            content={
-                "message": "테스트 이메일 발송 완료" if email_sent else "테스트 이메일 발송 실패",
-                "email": email,
-                "success": email_sent,
-                "details": message
+        # 2. 키워드 검색
+        if keyword:
+            filtered_data = [d for d in filtered_data
+                             if keyword.lower() in d.get("content", "").lower()
+                             or keyword.lower() in d.get("perfume_name", "").lower()]
+
+        # 3. 이미지 포함 여부 필터
+        if has_image is not None:
+            if has_image:
+                filtered_data = [d for d in filtered_data if d.get("image_url")]
+            else:
+                filtered_data = [d for d in filtered_data if not d.get("image_url")]
+
+        # 4. 🎯 감정 필터
+        if emotion:
+            filtered_data = [d for d in filtered_data
+                             if d.get("primary_emotion", "").lower() == emotion.lower()]
+            logger.info(f"🎯 감정 필터 적용: {emotion} -> {len(filtered_data)}개")
+
+        # 5. 🏷️ 감정 태그 필터
+        if emotion_tag:
+            filtered_data = [d for d in filtered_data
+                             if any(emotion_tag.lower() in tag.lower() for tag in d.get("tags", []))]
+            logger.info(f"🏷️ 감정 태그 필터 적용: {emotion_tag} -> {len(filtered_data)}개")
+
+        # 정렬 및 페이징
+        filtered_data.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        start = (page - 1) * size
+        end = start + size
+        paginated_data = filtered_data[start:end]
+
+        # 응답 데이터 변환 (감정 태그 정보 포함)
+        response_data = []
+        for item in paginated_data:
+            response_data.append({
+                "id": item.get("id", ""),
+                "user_name": item.get("user_name", "익명"),
+                "perfume_name": item.get("perfume_name", ""),
+                "content": item.get("content", ""),
+                "tags": item.get("tags", []),  # 🎯 병합된 태그들
+                "primary_emotion": item.get("primary_emotion", "중립"),
+                "emotion_confidence": item.get("emotion_confidence", 0.0),
+                "emotion_tags_auto": item.get("emotion_tags_auto", []),  # 🎯 자동 분석 태그
+                "analysis_method": item.get("analysis_method", "rule_based"),
+                "likes": item.get("likes", 0),
+                "created_at": item.get("created_at", ""),
+                # 이미지 관련 정보
+                "image_url": item.get("image_url"),
+                "thumbnail_url": item.get("thumbnail_url"),
+                "has_image": bool(item.get("image_url"))
+            })
+
+        return BaseResponse(
+            message=f"✅ 시향 일기 목록 조회 성공 (총 {len(filtered_data)}개)",
+            result={
+                "diaries": response_data,
+                "total_count": len(filtered_data),
+                "page": page,
+                "size": size,
+                "has_next": end < len(filtered_data),
+                "filters_applied": {
+                    "public": public,
+                    "has_image": has_image,
+                    "emotion": emotion,
+                    "emotion_tag": emotion_tag,
+                    "keyword": keyword
+                },
+                "emotion_tag_support": True,  # 🎯 감정 태그 지원 여부
+                "image_support": True
             }
         )
 
     except Exception as e:
-        logger.error(f"❌ 테스트 이메일 발송 중 오류: {e}")
+        logger.error(f"❌ 일기 목록 조회 오류: {e}")
         return JSONResponse(
             status_code=500,
-            content={
-                "message": "테스트 이메일 발송 중 오류가 발생했습니다.",
-                "error": str(e)
-            }
+            content={"message": f"서버 오류: {str(e)}"}
         )
 
 
-# 🆕 Apple 로그인 상태 확인 API (선택사항)
-@router.get("/apple-status", summary="Apple 로그인 상태 확인")
-async def check_apple_login_status():
-    """Apple 로그인 설정 상태를 확인합니다."""
+# ================================
+# 🆕 기타 이미지 관련 API들
+# ================================
+
+@router.delete("/images/{filename}", summary="🗑️ 이미지 삭제")
+async def delete_diary_image(filename: str, user_id: str = Query(..., description="사용자 ID")):
+    """업로드된 이미지 파일 삭제"""
     try:
-        # Firebase에서 Apple 로그인 활성화 여부는 직접 확인할 수 없으므로
-        # 설정 상태를 간접적으로 확인
-        firebase_status = get_firebase_status()
+        # 권한 확인 및 파일 삭제
+        success = delete_image_files(filename)
 
-        return JSONResponse(
-            content={
-                "apple_login_enabled": firebase_status["firebase_available"],
-                "message": "Apple 로그인이 Firebase와 연동되어 있습니다." if firebase_status[
-                    "firebase_available"] else "Firebase 설정을 확인해주세요.",
-                "supported_providers": ["email", "google", "apple"],
-                "firebase_status": firebase_status
-            }
+        if success:
+            # 일기 데이터에서도 이미지 정보 제거
+            for diary in diary_data:
+                if diary.get("image_filename") == filename and diary.get("user_id") == user_id:
+                    diary["image_url"] = None
+                    diary["thumbnail_url"] = None
+                    diary["image_filename"] = None
+                    diary["updated_at"] = datetime.now().isoformat()
+                    break
+
+            save_diary_data(diary_data)
+
+        return ImageDeleteResponse(
+            success=success,
+            message="이미지 삭제 완료" if success else "이미지 삭제 실패",
+            deleted_files=[filename, f"thumb_{filename}"] if success else []
+        )
+
+    except Exception as e:
+        logger.error(f"❌ 이미지 삭제 오류: {e}")
+        return ImageDeleteResponse(
+            success=False,
+            message=f"이미지 삭제 중 오류: {str(e)}",
+            deleted_files=[]
+        )
+
+
+@router.get("/images/stats", summary="📊 이미지 업로드 통계")
+async def get_image_upload_stats():
+    """업로드된 이미지들의 통계 정보 조회"""
+    try:
+        stats = get_upload_stats()
+        return ImageStatsResponse(
+            total_images=stats.get("total_files", 0),
+            total_size_mb=stats.get("total_size_mb", 0.0),
+            upload_dir=stats.get("upload_dir", "")
         )
     except Exception as e:
-        logger.error(f"❌ Apple 로그인 상태 확인 중 오류: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={
-                "apple_login_enabled": False,
-                "message": "Apple 로그인 상태 확인 중 오류가 발생했습니다.",
-                "error": str(e)
-            }
+        logger.error(f"❌ 이미지 통계 조회 오류: {e}")
+        return ImageStatsResponse(
+            total_images=0,
+            total_size_mb=0.0,
+            upload_dir="error"
         )
 
 
-# ✅ Firebase 상태 확인 API
-@router.get("/firebase-status", summary="Firebase 상태 확인")
-async def check_firebase_status():
-    return get_firebase_status()
+# ================================
+# 🎯 감정 태그 관련 유틸리티 API들
+# ================================
+
+@router.get("/emotion-tags/available", summary="🏷️ 사용 가능한 감정 태그 목록")
+async def get_available_emotion_tags():
+    """
+    사용 가능한 모든 감정 태그 목록 조회
+
+    프론트엔드에서 감정 태그 선택 UI를 만들 때 사용
+    """
+    try:
+        available_emotions = {}
+        for emotion, config in EMOTION_RULES.items():
+            available_emotions[emotion] = {
+                "korean_name": emotion,
+                "tags": config["tags"],
+                "keywords_sample": config["keywords"][:5]  # 샘플 키워드 5개
+            }
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "message": "사용 가능한 감정 태그 목록",
+                "emotions": available_emotions,
+                "total_emotions": len(available_emotions),
+                "usage_info": {
+                    "user_input": "사용자가 직접 선택 가능",
+                    "auto_analysis": "AI가 내용 분석 후 자동 추가",
+                    "merge_policy": "사용자 태그 + AI 태그 자동 병합"
+                }
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"❌ 감정 태그 목록 조회 오류: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"message": f"감정 태그 목록 조회 실패: {str(e)}"}
+        )
+
+
+@router.get("/emotion-tags/stats", summary="📊 감정 태그 사용 통계")
+async def get_emotion_tag_stats():
+    """
+    전체 일기에서 감정 태그 사용 통계 조회
+
+    어떤 감정 태그가 가장 많이 사용되는지 분석
+    """
+    try:
+        # 모든 태그 수집
+        all_tags = []
+        emotion_counts = {}
+
+        for diary in diary_data:
+            # 사용자 태그
+            tags = diary.get("tags", [])
+            all_tags.extend(tags)
+
+            # 주요 감정 카운트
+            primary_emotion = diary.get("primary_emotion", "중립")
+            emotion_counts[primary_emotion] = emotion_counts.get(primary_emotion, 0) + 1
+
+        # 태그 빈도 계산
+        tag_counter = Counter(all_tags)
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "message": "감정 태그 사용 통계",
+                "total_diaries": len(diary_data),
+                "most_used_tags": dict(tag_counter.most_common(10)),
+                "emotion_distribution": emotion_counts,
+                "tag_stats": {
+                    "total_unique_tags": len(tag_counter),
+                    "total_tag_usage": sum(tag_counter.values()),
+                    "average_tags_per_diary": round(sum(tag_counter.values()) / max(len(diary_data), 1), 2)
+                }
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"❌ 감정 태그 통계 조회 오류: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"message": f"감정 태그 통계 조회 실패: {str(e)}"}
+        )
