@@ -70,19 +70,63 @@ def register_routers():
     try:
         logger.info("🔧 라우터 등록 시작...")
 
-        # 1. 향수 추천 라우터 (노트 기반)
+        # 1. 향수 기본 정보 라우터
         try:
-            logger.info("🌸 향수 추천 라우터 등록 시도...")
+            logger.info("🌸 향수 기본 정보 라우터 등록 시도...")
             from routers.perfume_router import router as perfume_router
             app.include_router(perfume_router)
             router_status["perfume_router"] = "✅ 성공"
-            logger.info("  ✅ 향수 추천 라우터 등록 완료")
+            logger.info("  ✅ 향수 기본 정보 라우터 등록 완료")
         except ImportError as e:
             router_status["perfume_router"] = f"❌ ImportError: {str(e)}"
-            logger.error(f"  ❌ 향수 추천 라우터 임포트 실패: {e}")
+            logger.error(f"  ❌ 향수 기본 정보 라우터 임포트 실패: {e}")
         except Exception as e:
             router_status["perfume_router"] = f"❌ Exception: {str(e)}"
-            logger.error(f"  ❌ 향수 추천 라우터 등록 실패: {e}")
+            logger.error(f"  ❌ 향수 기본 정보 라우터 등록 실패: {e}")
+
+        # 1-2. 클러스터 기반 추천 라우터 (누락된 것)
+        try:
+            logger.info("🤖 클러스터 기반 추천 라우터 등록 시도...")
+            from routers.recommend_router import router as recommend_router
+            app.include_router(recommend_router)
+            router_status["recommend_router"] = "✅ 성공"
+            logger.info("  ✅ 클러스터 기반 추천 라우터 등록 완료")
+            logger.info("    🎯 엔드포인트: /perfumes/recommend-cluster")
+        except ImportError as e:
+            router_status["recommend_router"] = f"❌ ImportError: {str(e)}"
+            logger.error(f"  ❌ 클러스터 기반 추천 라우터 임포트 실패: {e}")
+        except Exception as e:
+            router_status["recommend_router"] = f"❌ Exception: {str(e)}"
+            logger.error(f"  ❌ 클러스터 기반 추천 라우터 등록 실패: {e}")
+
+        # 1-3. 2차 추천 라우터 (누락된 것)
+        try:
+            logger.info("🎯 2차 추천 라우터 등록 시도...")
+            from routers.recommend_2nd_router import router as recommend_2nd_router
+            app.include_router(recommend_2nd_router)
+            router_status["recommend_2nd_router"] = "✅ 성공"
+            logger.info("  ✅ 2차 추천 라우터 등록 완료")
+            logger.info("    🎯 엔드포인트: /perfumes/recommend-2nd")
+        except ImportError as e:
+            router_status["recommend_2nd_router"] = f"❌ ImportError: {str(e)}"
+            logger.error(f"  ❌ 2차 추천 라우터 임포트 실패: {e}")
+        except Exception as e:
+            router_status["recommend_2nd_router"] = f"❌ Exception: {str(e)}"
+            logger.error(f"  ❌ 2차 추천 라우터 등록 실패: {e}")
+
+        # 1-4. 추천 결과 저장 라우터 (선택적)
+        try:
+            logger.info("💾 추천 결과 저장 라우터 등록 시도...")
+            from routers.recommendation_save_router import router as recommendation_save_router
+            app.include_router(recommendation_save_router)
+            router_status["recommendation_save_router"] = "✅ 성공"
+            logger.info("  ✅ 추천 결과 저장 라우터 등록 완료")
+        except ImportError as e:
+            router_status["recommendation_save_router"] = f"⚠️ ImportError: {str(e)}"
+            logger.info("  ⚠️ 추천 결과 저장 라우터 없음 (선택적 기능)")
+        except Exception as e:
+            router_status["recommendation_save_router"] = f"❌ Exception: {str(e)}"
+            logger.warning(f"  ❌ 추천 결과 저장 라우터 등록 실패: {e}")
 
         # 2. 사용자 인증 라우터
         try:
@@ -189,13 +233,14 @@ def register_routers():
         registered_routes = [route.path for route in app.routes if hasattr(route, 'path')]
         logger.info(f"📋 등록된 총 라우트 수: {len(registered_routes)}")
 
-        # 주요 엔드포인트 확인
+        # 주요 엔드포인트 확인 (업데이트된 체크)
         key_endpoints = [
             "/perfumes/recommend-cluster",
             "/perfumes/recommend-2nd",
+            "/perfumes/",
             "/diaries/",
             "/auth/register",
-            "/reports/diary"  # 새 엔드포인트 추가
+            "/reports/diary"
         ]
 
         logger.info("🎯 주요 엔드포인트 확인:")
@@ -302,12 +347,12 @@ def read_root():
         "environment": "production" if os.getenv("RENDER") else "development",
         "port": os.getenv("PORT", "8000"),
         "features": [
-            "향수 추천 (1차 - AI 감정 클러스터)",
-            "향수 추천 (2차 - 노트 기반 정밀 추천)",
-            "시향 일기 (AI 감정 분석 포함)",
-            "사용자 인증 (Firebase)",
-            "회원 관리 (가입/탈퇴)",
-            "🆕 시향 일기 신고 기능"
+            "🎯 향수 추천 (1차 - AI 감정 클러스터)",
+            "🤖 향수 추천 (2차 - 노트 기반 정밀 추천)",
+            "📝 시향 일기 (AI 감정 분석 포함)",
+            "🔐 사용자 인증 (Firebase)",
+            "👤 회원 관리 (가입/탈퇴)",
+            "🚨 시향 일기 신고 기능"
         ],
         "deleted_apis": [
             "❌ /courses/recommend (시향 코스 추천)",
@@ -321,7 +366,15 @@ def read_root():
             "📊 신고 통계 및 관리",
             "⚖️ 관리자 신고 처리 기능",
             "🔒 중복 신고 방지",
-            "📈 실시간 신고 현황"
+            "📈 실시간 신고 현황",
+            "🎯 클러스터 기반 추천 시스템 복구",
+            "🤖 2차 정밀 추천 시스템 복구"
+        ],
+        "recommend_endpoints": [
+            "POST /perfumes/recommend-cluster - 클러스터 기반 1차 추천",
+            "POST /perfumes/recommend-2nd - 노트 기반 2차 정밀 추천",
+            "GET /perfumes/ - 향수 목록 조회",
+            "GET /perfumes/{name} - 향수 상세 정보"
         ],
         "report_endpoints": [
             "POST /reports/diary - 시향 일기 신고",
@@ -351,12 +404,12 @@ def health_check():
             "port": os.getenv("PORT", "8000"),
             "uptime": "running",
             "features_available": [
-                "1차 추천 (AI 감정 클러스터)",
-                "2차 추천 (노트 기반 정밀)",
-                "시향 일기 (AI 감정 분석)",
-                "사용자 인증",
-                "실시간 통계",
-                "🆕 신고 관리 시스템"
+                "🎯 1차 추천 (AI 감정 클러스터)",
+                "🤖 2차 추천 (노트 기반 정밀)",
+                "📝 시향 일기 (AI 감정 분석)",
+                "🔐 사용자 인증",
+                "📊 실시간 통계",
+                "🚨 신고 관리 시스템"
             ],
             "deleted_features": [
                 "시향 코스 추천",
@@ -388,8 +441,9 @@ def get_server_status():
             "environment": "production" if os.getenv("RENDER") else "development",
             "port": os.getenv("PORT", "8000"),
             "available_routers": {
-                "perfumes": "향수 추천 (노트 기반)",
-                "perfumes_cluster": "클러스터 기반 추천",
+                "perfumes": "향수 기본 정보 조회",
+                "perfumes_recommend": "🎯 클러스터 기반 추천",
+                "perfumes_recommend_2nd": "🤖 2차 정밀 추천",
                 "diaries": "시향 일기 (일부 기능)",
                 "auth": "사용자 인증",
                 "users": "사용자 관리",
@@ -406,13 +460,20 @@ def get_server_status():
                     "endpoint": "/perfumes/recommend-cluster",
                     "method": "AI 감정 클러스터 모델",
                     "input": "사용자 선호도 6개 특성",
-                    "output": "클러스터 + 향수 인덱스"
+                    "output": "클러스터 + 향수 인덱스 + 확률 배열",
+                    "features": ["클러스터 예측", "상위 15개 노트", "10개 추천 향수"]
                 },
                 "secondary_recommendation": {
                     "endpoint": "/perfumes/recommend-2nd",
-                    "method": "노트 기반 정밀 매칭",
+                    "method": "노트 기반 정밀 매칭 + AI 결합",
                     "input": "노트 선호도 + 1차 추천 결과",
-                    "output": "정밀 점수 기반 향수 순위"
+                    "output": "정밀 점수 기반 향수 순위",
+                    "features": ["노트 매칭 (70%)", "감정 가중치 (25%)", "다양성 보너스 (5%)"]
+                },
+                "perfume_info": {
+                    "endpoint": "/perfumes/",
+                    "method": "향수 데이터베이스 조회",
+                    "features": ["3000+ 향수 정보", "브랜드/노트/계절 필터링", "상세 정보 제공"]
                 }
             },
             "report_system": {
