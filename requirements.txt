@@ -1,4 +1,4 @@
-# Whiff API Server - 필수 라이브러리만
+# Whiff API Server - JWT 인증을 위한 완전한 필수 라이브러리
 
 # FastAPI 및 서버 관련 (필수)
 fastapi==0.104.1
@@ -11,8 +11,8 @@ firebase-admin==6.2.0
 # 🆕 JWT 인증 관련 (추가)
 PyJWT==2.8.0
 
-# 데이터 검증 (필수)
-pydantic==2.5.0
+# 데이터 검증 (필수) - 이메일 검증 포함
+pydantic[email]==2.5.0
 
 # HTTP 요청 (필수)
 requests==2.31.0
@@ -20,5 +20,11 @@ requests==2.31.0
 # 환경변수 관리 (필수)
 python-dotenv==1.0.0
 
+# 인증 라우터를 위한 추가 라이브러리
+email-validator==2.1.0
+
 # 기본 유틸리티
 typing-extensions==4.8.0
+
+# 이메일 발송을 위한 SMTP (파이썬 기본 라이브러리 smtplib 사용)
+# 추가 라이브러리 불필요
