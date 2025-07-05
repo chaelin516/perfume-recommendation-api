@@ -1,17 +1,15 @@
-# routers/auth_router.py - JWT 토큰 발급 기능 추가 버전
+# routers/auth_router.py - 구글 로그인 원래대로 유지, JWT는 별도 API
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, Field, validator
-from utils.auth_utils import verify_firebase_token_optional, get_firebase_status
-from utils.email_sender import email_sender  # 새로 추가된 이메일 발송 기능
+from utils.auth_utils import verify_firebase_token_optional, get_firebase_status, verify_jwt_only
+from utils.email_sender import email_sender
 from models.user_model import save_user
 from firebase_admin import auth
 import logging
 import os
-
-# 🆕 JWT 관련 import 추가
-from utils.jwt_utils import create_access_token
+from datetime import datetime
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -19,7 +17,7 @@ router = APIRouter(prefix="/auth", tags=["Auth"])
 logger = logging.getLogger(__name__)
 
 
-# ✅ 개선된 요청/응답 스키마
+# ✅ 요청/응답 스키마 (기존 유지)
 class EmailPasswordRegister(BaseModel):
     email: EmailStr = Field(..., description="사용자 이메일 주소", example="user@example.com")
     password: str = Field(..., min_length=6, max_length=50, description="비밀번호 (최소 6자)", example="password123")
@@ -36,15 +34,6 @@ class EmailPasswordRegister(BaseModel):
         if not v or not v.strip():
             raise ValueError('이름은 필수 항목입니다.')
         return v.strip()
-
-    class Config:
-        schema_extra = {
-            "example": {
-                "email": "user@example.com",
-                "password": "password123",
-                "name": "홍길동"
-            }
-        }
 
 
 class EmailPasswordLogin(BaseModel):
@@ -64,7 +53,6 @@ class VerifyEmailRequest(BaseModel):
     id_token: str = Field(..., description="Firebase ID 토큰")
 
 
-# ✅ 응답 스키마
 class RegisterResponse(BaseModel):
     message: str
     uid: str
@@ -73,6 +61,186 @@ class RegisterResponse(BaseModel):
     verification_link: str = None
     smtp_configured: bool = False
     email_error: str = None
+
+
+# ─── JWT 토큰 import ──────────────────────────────────────────────
+try:
+    from utils.jwt_utils import create_access_token
+
+    JWT_AVAILABLE = True
+    logger.info("✅ JWT 유틸리티 로드 성공")
+except ImportError:
+    JWT_AVAILABLE = False
+    logger.warning("⚠️ JWT 유틸리티 없음 - JWT 토큰 발급 불가")
+
+
+    def create_access_token(user_data):
+        return None
+
+
+# ─── 로그인/회원가입 API들 ─────────────────────────────────────────
+
+# 🆕 이메일/비밀번호 로그인 (JWT 토큰 발급)
+@router.post("/login", summary="이메일/비밀번호 로그인")
+async def login_with_email(request: EmailPasswordLogin):
+    """이메일/비밀번호 로그인 후 JWT 토큰 발급"""
+    logger.info(f"🔐 로그인 요청: {request.email}")
+
+    try:
+        # 1. 사용자 존재 확인
+        user_record = auth.get_user_by_email(request.email)
+        logger.info(f"✅ 사용자 확인 완료: {user_record.uid}")
+
+        # 2. JWT 토큰 발급용 사용자 정보 구성
+        user_data = {
+            'uid': user_record.uid,
+            'email': user_record.email,
+            'name': user_record.display_name or request.email.split('@')[0],
+            'picture': user_record.photo_url or '',
+            'email_verified': user_record.email_verified
+        }
+
+        # 3. JWT 토큰 생성 (가능한 경우)
+        jwt_token = None
+        if JWT_AVAILABLE:
+            jwt_token = create_access_token(user_data)
+            logger.info(f"✅ JWT 토큰 생성 완료: {request.email}")
+
+        # 4. 사용자 정보 DB 저장/업데이트
+        await save_user(
+            uid=user_record.uid,
+            email=user_record.email,
+            name=user_data['name']
+        )
+
+        # 5. 응답 구성
+        response_content = {
+            "message": "로그인이 완료되었습니다.",
+            "user_exists": True,
+            "email_verified": user_record.email_verified,
+            "uid": user_record.uid,
+            "user": {
+                "uid": user_record.uid,
+                "email": user_record.email,
+                "name": user_data['name'],
+                "picture": user_data['picture'],
+                "email_verified": user_record.email_verified
+            }
+        }
+
+        # JWT 토큰이 생성된 경우에만 추가
+        if jwt_token:
+            response_content.update({
+                "token": jwt_token,
+                "token_type": "Bearer",
+                "expires_in": 86400
+            })
+
+
+# ─── JWT 토큰 검증 및 기타 API들 ──────────────────────────────────────
+
+# 🆕 JWT 토큰 테스트 API
+@router.get("/test-jwt", summary="JWT 토큰 테스트")
+async def test_jwt_token(user=Depends(verify_jwt_only)):
+    """JWT 토큰 유효성 테스트"""
+    return {
+        "message": f"{user.get('name', '알 수 없음')}님의 JWT 토큰이 유효합니다.",
+        "user": {
+            "uid": user["uid"],
+            "email": user.get("email"),
+            "name": user.get("name"),
+            "picture": user.get("picture", "")
+        },
+        "token_info": {
+            "type": "JWT",
+            "email_verified": user.get("email_verified", False)
+        }
+    }
+
+
+# 🆕 사용자 정보 조회 API (JWT 토큰 필요)
+@router.get("/me", summary="내 정보 조회")
+async def get_my_info(user=Depends(verify_jwt_only)):
+    """JWT 토큰으로 사용자 정보 조회"""
+    return {
+        "uid": user["uid"],
+        "email": user.get("email"),
+        "name": user.get("name"),
+        "picture": user.get("picture", ""),
+        "email_verified": user.get("email_verified", False)
+    }
+
+
+# 🧪 테스트용 JWT 토큰 생성 API (개발 전용)
+@router.post("/create-test-token", summary="테스트용 JWT 토큰 생성")
+async def create_test_token(email: str = "test@whiff.com", name: str = "테스트 사용자"):
+    """개발/테스트용 JWT 토큰 생성"""
+
+    if not JWT_AVAILABLE:
+        raise HTTPException(status_code=503, detail="JWT 기능이 비활성화되어 있습니다.")
+
+    try:
+        # 테스트용 사용자 데이터
+        test_user_data = {
+            'uid': f'test-user-{datetime.now().strftime("%Y%m%d%H%M%S")}',
+            'email': email,
+            'name': name,
+            'picture': '',
+            'email_verified': True
+        }
+
+        # JWT 토큰 생성
+        jwt_token = create_access_token(test_user_data)
+
+        logger.info(f"🧪 테스트 JWT 토큰 생성: {email}")
+
+        return JSONResponse(content={
+            "message": "테스트용 JWT 토큰이 생성되었습니다.",
+            "token": jwt_token,
+            "user": test_user_data,
+            "token_type": "Bearer",
+            "expires_in": 86400,
+            "usage": {
+                "header": f"Authorization: Bearer {jwt_token}",
+                "test_endpoints": [
+                    "GET /users/test-jwt",
+                    "GET /users/me",
+                    "GET /auth/test-jwt"
+                ]
+            },
+            "note": "이 토큰은 테스트 전용입니다."
+        })
+
+    except Exception as e:
+        logger.error(f"❌ 테스트 토큰 생성 실패: {e}")
+        raise HTTPException(status_code=500, detail=f"테스트 토큰 생성 실패: {str(e)}")
+
+
+# ─── 기존 API들 (Firebase 토큰 사용) ─────────────────────────────
+
+@router.post("/logout", summary="로그아웃")
+async def logout(user=Depends(verify_firebase_token_optional)):
+    """로그아웃"""
+    try:
+        # JWT는 stateless이므로 서버에서 할 일은 없음
+        # Firebase 토큰이면 revoke 처리
+        if "firebase" in str(type(user)).lower():
+            auth.revoke_refresh_tokens(user["uid"])
+
+        return JSONResponse(content={
+            "message": "로그아웃이 완료되었습니다.",
+            "uid": user["uid"],
+            "note": "JWT 토큰은 클라이언트에서 삭제해주세요."
+        })
+    except Exception as e:
+        logging.error(f"Logout error: {e}")
+        raise HTTPException(status_code=500, detail="로그아웃 중 오류가 발생했습니다.")
+
+
+@router.get("/firebase-status", summary="Firebase 상태 확인")
+async def check_firebase_status():
+    """Firebase 상태 확인"""
+    return get_firebase_status()
 
 
 # ✅ 이메일 발송 상태 확인 API
@@ -97,7 +265,8 @@ async def check_email_status():
         "smtp_configured": config_valid,
         "config_message": config_message,
         "environment_variables": env_status,
-        "email_sending_available": config_valid
+        "email_sending_available": config_valid,
+        "jwt_available": JWT_AVAILABLE
     }
 
     logger.info(f"📧 이메일 상태: {'✅ 사용 가능' if config_valid else '❌ 설정 필요'}")
@@ -105,303 +274,44 @@ async def check_email_status():
     return JSONResponse(content=response)
 
 
-# ✅ SMTP 연결 테스트 API
-@router.post("/test-smtp", summary="SMTP 연결 테스트")
-async def test_smtp_connection():
-    """SMTP 서버 연결을 실제로 테스트합니다."""
-    logger.info("🧪 SMTP 연결 테스트 시작")
-
-    try:
-        success, message = email_sender.test_smtp_connection()
-
-        if success:
-            logger.info(f"✅ SMTP 테스트 성공: {message}")
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "success": True,
-                    "message": message,
-                    "timestamp": logger.handlers[0].formatter.formatTime(
-                        logger.makeRecord("", 0, "", 0, "", (), None)) if logger.handlers else None
-                }
-            )
-        else:
-            logger.error(f"❌ SMTP 테스트 실패: {message}")
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "success": False,
-                    "error": message,
-                    "suggestion": "SMTP 환경변수 설정을 확인하세요."
-                }
-            )
-
-    except Exception as e:
-        logger.error(f"❌ SMTP 테스트 중 예외: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "error": f"테스트 중 오류: {str(e)}"
-            }
-        )
-
-
-# ✅ 기존 토큰 테스트 API
-@router.post("/test", summary="Firebase 토큰 유효성 테스트")
+@router.post("/test", summary="Firebase 토큰 유효성 테스트 (구버전)")
 async def test_token(user=Depends(verify_firebase_token_optional)):
+    """Firebase 토큰 테스트 (구버전 호환)"""
     return {
         "message": f"{user.get('name', '알 수 없음')}님, 인증되었습니다.",
         "uid": user["uid"],
-        "email": user.get("email")
+        "email": user.get("email"),
+        "note": "이 API는 구버전 호환용입니다. JWT API를 사용하세요."
     }
+    content = response_content)
 
-
-# 🆕 이메일/비밀번호 회원가입 (JWT 토큰 발급 포함)
-@router.post(
-    "/register",
-    summary="이메일/비밀번호 회원가입",
-    response_model=RegisterResponse,
-    responses={
-        201: {"description": "회원가입 성공"},
-        400: {"description": "이미 존재하는 이메일 또는 잘못된 입력"},
-        422: {"description": "입력 데이터 형식 오류"},
-        500: {"description": "서버 내부 오류"}
-    }
-)
-async def register_with_email(request: EmailPasswordRegister):
-    logger.info(f"🚀 회원가입 요청 시작")
-    logger.info(f"  - 이메일: {request.email}")
-    logger.info(f"  - 이름: {request.name}")
-    logger.info(f"  - 비밀번호 길이: {len(request.password)}자")
-
-    try:
-        # 1. Firebase에서 사용자 생성
-        logger.info(f"🔥 Firebase 사용자 생성 시작...")
-        user_record = auth.create_user(
-            email=request.email,
-            password=request.password,
-            display_name=request.name,
-            email_verified=False
-        )
-        logger.info(f"✅ Firebase 사용자 생성 완료: uid={user_record.uid}")
-
-        # 2. 이메일 인증 링크 생성
-        logger.info(f"📧 이메일 인증 링크 생성 시작...")
-        try:
-            verification_link = auth.generate_email_verification_link(request.email)
-            logger.info(f"✅ 이메일 인증 링크 생성 완료")
-            logger.info(f"  - 링크 길이: {len(verification_link)}자")
-        except Exception as e:
-            logger.error(f"❌ 이메일 인증 링크 생성 실패: {e}")
-            verification_link = None
-
-        # 3. 사용자 정보 DB 저장
-        logger.info(f"💾 사용자 정보 DB 저장 시작...")
-        try:
-            await save_user(
-                uid=user_record.uid,
-                email=request.email,
-                name=request.name
-            )
-            logger.info(f"✅ 사용자 정보 DB 저장 완료")
-        except Exception as e:
-            logger.error(f"❌ 사용자 정보 저장 실패: {e}")
-
-        # 🆕 4. JWT 토큰 생성 (회원가입 직후 로그인 상태)
-        logger.info(f"🔑 JWT 토큰 생성 시작...")
-        try:
-            user_data = {
-                "uid": user_record.uid,
-                "email": request.email,
-                "name": request.name,
-                "picture": ""
-            }
-            access_token = create_access_token(user_data)
-            logger.info(f"✅ JWT 토큰 생성 완료")
-        except Exception as e:
-            logger.error(f"❌ JWT 토큰 생성 실패: {e}")
-            access_token = None
-
-        # 5. SMTP 설정 확인
-        logger.info(f"📧 SMTP 설정 확인...")
-        smtp_configured, smtp_message = email_sender.check_smtp_config()
-        logger.info(f"  - SMTP 설정: {'✅ 완료' if smtp_configured else '❌ 미완료'}")
-        logger.info(f"  - 메시지: {smtp_message}")
-
-        # 6. 실제 이메일 발송 시도
-        email_sent = False
-        email_error = None
-
-        if smtp_configured and verification_link:
-            logger.info(f"📮 이메일 발송 시작...")
-            try:
-                email_sent, email_message = email_sender.send_verification_email(
-                    to_email=request.email,
-                    verification_link=verification_link,
-                    user_name=request.name
-                )
-
-                if email_sent:
-                    logger.info(f"✅ 이메일 발송 성공: {email_message}")
-                else:
-                    logger.error(f"❌ 이메일 발송 실패: {email_message}")
-                    email_error = email_message
-
-            except Exception as e:
-                logger.error(f"❌ 이메일 발송 중 예외: {str(e)}")
-                email_sent = False
-                email_error = f"이메일 발송 예외: {str(e)}"
-        else:
-            if not smtp_configured:
-                email_error = "SMTP 설정이 완료되지 않았습니다."
-                logger.warning(f"⚠️ {email_error}")
-            if not verification_link:
-                email_error = "이메일 인증 링크 생성에 실패했습니다."
-                logger.warning(f"⚠️ {email_error}")
-
-        # 7. 응답 생성
-        response_data = {
-            "message": "회원가입이 완료되었습니다." + (
-                " 이메일을 확인해서 인증을 완료해주세요." if email_sent
-                else " 이메일 발송에 실패했습니다."
-            ),
-            "token": access_token,  # 🔑 JWT 토큰 추가
-            "user": {
-                "uid": user_record.uid,
-                "email": request.email,
-                "name": request.name
-            },
-            "uid": user_record.uid,
-            "email": request.email,
-            "email_sent": email_sent,
-            "smtp_configured": smtp_configured
-        }
-
-        # 이메일 발송 실패 시 추가 정보 제공
-        if not email_sent:
-            response_data["email_error"] = email_error
-            if verification_link:
-                response_data["verification_link"] = verification_link
-                response_data["manual_verification_note"] = "위 링크를 브라우저에서 직접 열어 인증할 수 있습니다."
-
-        logger.info(f"🎉 회원가입 처리 완료")
-        logger.info(f"  - 사용자 생성: ✅")
-        logger.info(f"  - DB 저장: ✅")
-        logger.info(f"  - JWT 토큰: {'✅' if access_token else '❌'}")
-        logger.info(f"  - 이메일 발송: {'✅' if email_sent else '❌'}")
-
-        return JSONResponse(
-            status_code=201,
-            content=response_data
-        )
-
-    except auth.EmailAlreadyExistsError:
-        logger.warning(f"⚠️ 이미 존재하는 이메일: {request.email}")
-        raise HTTPException(
-            status_code=400,
-            detail="이미 존재하는 이메일 주소입니다."
-        )
-    except auth.WeakPasswordError as e:
-        logger.warning(f"⚠️ 약한 비밀번호: {e}")
-        raise HTTPException(
-            status_code=400,
-            detail="비밀번호가 너무 약합니다. 최소 6자 이상의 비밀번호를 사용해주세요."
-        )
-    except auth.InvalidEmailError:
-        logger.warning(f"⚠️ 잘못된 이메일 형식: {request.email}")
-        raise HTTPException(
-            status_code=400,
-            detail="올바른 이메일 형식이 아닙니다."
-        )
-    except Exception as e:
-        logger.error(f"❌ 회원가입 중 예외 발생: {str(e)}")
-        logger.error(f"  - Exception Type: {type(e).__name__}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"회원가입 중 오류가 발생했습니다: {str(e)}"
-        )
-
-
-# 🆕 이메일/비밀번호 로그인 - JWT 토큰 발급 버전
-@router.post("/login", summary="이메일/비밀번호 로그인")
-async def login_with_email(request: EmailPasswordLogin):
-    try:
-        # Firebase에서 사용자 조회
-        user_record = auth.get_user_by_email(request.email)
-
-        # 🆕 JWT 토큰 생성을 위한 사용자 데이터
-        user_data = {
-            "uid": user_record.uid,
-            "email": user_record.email,
-            "name": user_record.display_name or "",
-            "picture": ""
-        }
-
-        # 🆕 JWT 액세스 토큰 생성
-        access_token = create_access_token(user_data)
-
-        # 사용자 정보 DB 저장/업데이트
-        await save_user(
-            uid=user_record.uid,
-            email=user_record.email,
-            name=user_record.display_name or ""
-        )
-
-        return JSONResponse(
-            content={
-                "message": "로그인이 완료되었습니다.",
-                "token": access_token,  # 🔑 JWT 토큰 추가
-                "user": {
-                    "uid": user_record.uid,
-                    "email": user_record.email,
-                    "name": user_record.display_name or "",
-                    "email_verified": user_record.email_verified
-                }
-            }
-        )
     except auth.UserNotFoundError:
-        raise HTTPException(status_code=404, detail="존재하지 않는 사용자입니다.")
-    except Exception as e:
-        logging.error(f"Login error: {e}")
-        raise HTTPException(status_code=500, detail="로그인 중 오류가 발생했습니다.")
+    logger.warning(f"⚠️ 존재하지 않는 사용자: {request.email}")
+    raise HTTPException(status_code=404, detail="존재하지 않는 사용자입니다.")
+
+except Exception as e:
+logger.error(f"❌ 로그인 처리 중 오류: {e}")
+raise HTTPException(status_code=500, detail="로그인 처리 중 오류가 발생했습니다.")
 
 
-# 🆕 구글 로그인 - JWT 토큰 발급 버전
+# ✅ 구글 로그인 (★ 기존 방식 그대로 유지 ★)
 @router.post("/google-login", summary="구글 로그인")
 async def google_login(request: GoogleLoginRequest):
+    """구글 로그인 (기존 연동 방식 유지 - JWT 토큰 없음)"""
     try:
-        # Firebase ID 토큰 검증
         decoded_token = auth.verify_id_token(request.id_token)
         uid = decoded_token["uid"]
         email = decoded_token.get("email")
         name = decoded_token.get("name")
         picture = decoded_token.get("picture")
 
-        # 사용자 정보 DB 저장
         await save_user(uid=uid, email=email, name=name, picture=picture)
 
-        # 🆕 JWT 토큰 생성을 위한 사용자 데이터
-        user_data = {
-            "uid": uid,
-            "email": email,
-            "name": name,
-            "picture": picture or ""
-        }
-
-        # 🆕 JWT 액세스 토큰 생성
-        access_token = create_access_token(user_data)
-
+        # ★ 기존 응답 형태 그대로 유지 (JWT 토큰 없음) ★
         return JSONResponse(
             content={
                 "message": "구글 로그인이 완료되었습니다.",
-                "token": access_token,  # 🔑 JWT 토큰 추가
-                "user": {
-                    "uid": uid,
-                    "email": email,
-                    "name": name,
-                    "picture": picture
-                }
+                "user": {"uid": uid, "email": email, "name": name, "picture": picture}
             }
         )
     except auth.InvalidIdTokenError:
@@ -411,234 +321,110 @@ async def google_login(request: GoogleLoginRequest):
         raise HTTPException(status_code=500, detail="구글 로그인 중 오류가 발생했습니다.")
 
 
-# 🆕 이메일 인증 재발송 API (실제 이메일 발송 포함)
-@router.post("/resend-verification", summary="이메일 인증 재발송")
-async def resend_verification_email(request: VerifyEmailRequest):
-    logger.info(f"🔄 이메일 인증 재발송 요청")
+# 🆕 이메일/비밀번호 회원가입 (JWT 토큰 발급)
+@router.post("/register", summary="이메일/비밀번호 회원가입", response_model=RegisterResponse)
+async def register_with_email(request: EmailPasswordRegister):
+    """회원가입 후 JWT 토큰 발급"""
+    logger.info(f"🚀 회원가입 요청 시작: {request.email}")
 
     try:
-        # ID 토큰에서 사용자 정보 추출
-        decoded_token = auth.verify_id_token(request.id_token)
-        email = decoded_token.get("email")
-        name = decoded_token.get("name", "사용자")
-        uid = decoded_token.get("uid")
-
-        logger.info(f"  - 사용자: {name} ({email})")
-        logger.info(f"  - UID: {uid}")
-
-        if not email:
-            raise HTTPException(
-                status_code=400,
-                detail="토큰에서 이메일 정보를 찾을 수 없습니다."
-            )
-
-        # 이메일 인증 링크 생성
-        logger.info(f"📧 이메일 인증 링크 재생성...")
-        verification_link = auth.generate_email_verification_link(email)
-        logger.info(f"✅ 이메일 인증 링크 재생성 완료")
-
-        # SMTP 설정 확인 및 이메일 발송
-        smtp_configured, smtp_message = email_sender.check_smtp_config()
-
-        if smtp_configured:
-            logger.info(f"📮 이메일 재발송 시작...")
-            email_sent, email_message = email_sender.send_verification_email(
-                to_email=email,
-                verification_link=verification_link,
-                user_name=name
-            )
-
-            if email_sent:
-                logger.info(f"✅ 이메일 재발송 성공")
-                return JSONResponse(
-                    content={
-                        "message": "인증 이메일이 재발송되었습니다.",
-                        "email": email,
-                        "email_sent": True
-                    }
-                )
-            else:
-                logger.error(f"❌ 이메일 재발송 실패: {email_message}")
-                return JSONResponse(
-                    status_code=500,
-                    content={
-                        "message": "이메일 발송에 실패했습니다.",
-                        "error": email_message,
-                        "verification_link": verification_link,
-                        "manual_note": "위 링크를 브라우저에서 직접 열어 인증할 수 있습니다."
-                    }
-                )
-        else:
-            logger.warning(f"⚠️ SMTP 설정 미완료: {smtp_message}")
-            return JSONResponse(
-                content={
-                    "message": "SMTP 설정이 완료되지 않아 이메일을 발송할 수 없습니다.",
-                    "smtp_error": smtp_message,
-                    "verification_link": verification_link,
-                    "note": "위 링크를 브라우저에서 직접 열어 인증할 수 있습니다."
-                }
-            )
-
-    except auth.InvalidIdTokenError:
-        logger.error(f"❌ 유효하지 않은 토큰")
-        raise HTTPException(
-            status_code=401,
-            detail="유효하지 않은 토큰입니다."
+        # 1. Firebase 사용자 생성
+        logger.info(f"🔥 Firebase 사용자 생성 시작...")
+        user_record = auth.create_user(
+            email=request.email,
+            password=request.password,
+            display_name=request.name,
+            email_verified=False
         )
-    except Exception as e:
-        logger.error(f"❌ 이메일 재발송 중 오류: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="이메일 인증 재발송 중 오류가 발생했습니다."
+        logger.info(f"✅ Firebase 사용자 생성 완료: uid={user_record.uid}")
+
+        # 2. JWT 토큰 생성용 사용자 정보
+        user_data = {
+            'uid': user_record.uid,
+            'email': request.email,
+            'name': request.name,
+            'picture': '',
+            'email_verified': False
+        }
+
+        # 3. JWT 토큰 생성 (가능한 경우)
+        jwt_token = None
+        if JWT_AVAILABLE:
+            jwt_token = create_access_token(user_data)
+            logger.info(f"✅ JWT 토큰 생성 완료: {request.email}")
+
+        # 4. 사용자 정보 DB 저장
+        await save_user(
+            uid=user_record.uid,
+            email=request.email,
+            name=request.name
         )
 
-
-# 🆕 비밀번호 재설정 이메일 발송 API
-@router.post(
-    "/forgot-password",
-    summary="비밀번호 재설정 이메일 발송",
-    description="비밀번호를 잊어버린 사용자에게 재설정 이메일을 발송합니다.",
-    responses={
-        200: {"description": "비밀번호 재설정 이메일 발송 성공"},
-        404: {"description": "존재하지 않는 이메일"},
-        500: {"description": "서버 내부 오류"}
-    }
-)
-async def forgot_password(request: ForgotPasswordRequest):
-    """비밀번호 재설정 이메일 발송"""
-    logger.info(f"🔑 비밀번호 재설정 요청")
-    logger.info(f"  - 이메일: {request.email}")
-
-    try:
-        # 1. 사용자 존재 확인
-        logger.info("👤 사용자 존재 확인...")
-        try:
-            user_record = auth.get_user_by_email(request.email)
-            logger.info(f"✅ 사용자 확인 완료: {user_record.uid}")
-        except auth.UserNotFoundError:
-            logger.warning(f"⚠️ 존재하지 않는 사용자: {request.email}")
-            raise HTTPException(
-                status_code=404,
-                detail="존재하지 않는 이메일 주소입니다."
-            )
-
-        # 2. 비밀번호 재설정 링크 생성
-        logger.info("🔗 비밀번호 재설정 링크 생성...")
-        reset_link = auth.generate_password_reset_link(request.email)
-        logger.info(f"✅ 재설정 링크 생성 완료")
-
-        # 3. SMTP 설정 확인
-        smtp_configured, smtp_message = email_sender.check_smtp_config()
-        logger.info(f"📧 SMTP 설정: {'✅' if smtp_configured else '❌'} - {smtp_message}")
-
-        # 4. 이메일 발송 시도
+        # 5. 이메일 인증 링크 생성 (선택적)
+        verification_link = None
         email_sent = False
         email_error = None
 
-        if smtp_configured:
-            logger.info("📮 비밀번호 재설정 이메일 발송 시작...")
-            try:
-                # 실제 이메일 발송 (email_sender 유틸리티 사용)
-                email_sent, email_message = email_sender.send_password_reset_email(
+        try:
+            verification_link = auth.generate_email_verification_link(request.email)
+            logger.info(f"✅ 이메일 인증 링크 생성 완료")
+
+            # SMTP 설정 확인 및 이메일 발송
+            smtp_configured, smtp_message = email_sender.check_smtp_config()
+            if smtp_configured:
+                email_sent, email_message = email_sender.send_verification_email(
                     to_email=request.email,
-                    reset_link=reset_link,
-                    user_name=user_record.display_name or "사용자"
+                    verification_link=verification_link,
+                    user_name=request.name
                 )
-
-                if email_sent:
-                    logger.info("✅ 이메일 발송 성공")
-                else:
-                    logger.error(f"❌ 이메일 발송 실패: {email_message}")
+                if not email_sent:
                     email_error = email_message
+            else:
+                email_error = "SMTP 설정이 완료되지 않았습니다."
 
-            except Exception as e:
-                logger.error(f"❌ 이메일 발송 중 예외: {str(e)}")
-                email_sent = False
-                email_error = f"이메일 발송 중 오류: {str(e)}"
-        else:
-            email_error = f"SMTP 설정 오류: {smtp_message}"
+        except Exception as e:
+            logger.warning(f"⚠️ 이메일 처리 실패: {e}")
+            email_error = str(e)
 
-        # 5. 응답 반환
-        if email_sent:
-            return JSONResponse(
-                content={
-                    "message": "비밀번호 재설정 이메일이 발송되었습니다. 이메일을 확인해주세요.",
-                    "email": request.email,
-                    "email_sent": True,
-                    "note": "이메일이 도착하지 않으면 스팸 폴더를 확인해주세요."
-                }
-            )
-        else:
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "message": "비밀번호 재설정 이메일 발송에 실패했습니다.",
-                    "email": request.email,
-                    "email_sent": False,
-                    "error": email_error,
-                    "reset_link": reset_link,
-                    "manual_note": "위 링크를 브라우저에서 직접 열어 비밀번호를 재설정할 수 있습니다."
-                }
-            )
+        # 6. 응답 생성
+        response_data = {
+            "message": "회원가입이 완료되었습니다.",
+            "uid": user_record.uid,
+            "email": request.email,
+            "user": {
+                "uid": user_record.uid,
+                "email": request.email,
+                "name": request.name,
+                "picture": "",
+                "email_verified": False
+            },
+            "email_sent": email_sent,
+            "smtp_configured": smtp_configured
+        }
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ 비밀번호 재설정 처리 중 오류: {e}")
-        logger.error(f"  - Exception Type: {type(e).__name__}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"비밀번호 재설정 처리 중 오류가 발생했습니다: {str(e)}"
-        )
+        # JWT 토큰이 생성된 경우에만 추가
+        if jwt_token:
+            response_data.update({
+                "token": jwt_token,
+                "token_type": "Bearer",
+                "expires_in": 86400
+            })
 
+        if not email_sent and email_error:
+            response_data["email_error"] = email_error
+        if verification_link:
+            response_data["verification_link"] = verification_link
 
-# 🆕 테스트 이메일 발송 API
-@router.post("/send-test-email", summary="테스트 이메일 발송")
-async def send_test_email(email: EmailStr):
-    """개발/디버깅용 테스트 이메일을 발송합니다."""
-    logger.info(f"🧪 테스트 이메일 발송 요청: {email}")
-
-    try:
-        # 테스트 링크 생성
-        test_link = "https://example.com/test-verification"
-
-        # 이메일 발송
-        email_sent, message = email_sender.send_verification_email(
-            to_email=email,
-            verification_link=test_link,
-            user_name="테스트 사용자"
-        )
+        logger.info(f"🎉 회원가입 처리 완료 - JWT 토큰: {'✅' if jwt_token else '❌'}")
 
         return JSONResponse(
-            content={
-                "message": "테스트 이메일 발송 완료" if email_sent else "테스트 이메일 발송 실패",
-                "email": email,
-                "success": email_sent,
-                "details": message
-            }
+            status_code=201,
+            content=response_data
         )
 
+    except auth.EmailAlreadyExistsError:
+        logger.warning(f"⚠️ 이미 존재하는 이메일: {request.email}")
+        raise HTTPException(status_code=400, detail="이미 존재하는 이메일 주소입니다.")
     except Exception as e:
-        logger.error(f"❌ 테스트 이메일 발송 중 오류: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={
-                "message": "테스트 이메일 발송 중 오류가 발생했습니다.",
-                "error": str(e)
-            }
-        )
-
-
-@router.post("/logout", summary="로그아웃")
-async def logout(user=Depends(verify_firebase_token_optional)):
-    try:
-        auth.revoke_refresh_tokens(user["uid"])
-        return JSONResponse(content={"message": "로그아웃이 완료되었습니다.", "uid": user["uid"]})
-    except Exception as e:
-        logging.error(f"Logout error: {e}")
-        raise HTTPException(status_code=500, detail="로그아웃 중 오류가 발생했습니다.")
-
-
-@router.get("/firebase-status", summary="Firebase 상태 확인")
-async def check_firebase_status():
-    return get_firebase_status()
+        logger.error(f"❌ 회원가입 중 예외 발생: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"회원가입 중 오류가 발생했습니다: {str(e)}")
