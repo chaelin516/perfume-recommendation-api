@@ -1,4 +1,4 @@
-# Whiff API Server - JWT 인증을 위한 완전한 필수 라이브러리
+# Whiff API Server - 완전한 라이브러리 세트
 
 # FastAPI 및 서버 관련 (필수)
 fastapi==0.104.1
@@ -8,7 +8,7 @@ python-multipart==0.0.6
 # Firebase 관련 (필수)
 firebase-admin==6.2.0
 
-# 🆕 JWT 인증 관련 (추가)
+# 🆕 JWT 인증 관련
 PyJWT==2.8.0
 
 # 데이터 검증 (필수) - 이메일 검증 포함
@@ -23,8 +23,38 @@ python-dotenv==1.0.0
 # 인증 라우터를 위한 추가 라이브러리
 email-validator==2.1.0
 
+# 데이터 처리 라이브러리 (향수 추천 시스템용)
+pandas==2.0.3
+numpy==1.24.3
+
+# 이미지 처리 (시향 일기, 신고 시스템용)
+Pillow==10.0.0
+
+# 데이터베이스 관련 (호환 버전)
+sqlmodel==0.0.14
+sqlalchemy==1.4.41
+
+# 머신러닝 관련 (향수 추천 알고리즘용)
+scikit-learn==1.3.0
+
+# 텐서플로우 (감정 분석 모델용) - 가벼운 버전
+tensorflow==2.15.0
+
 # 기본 유틸리티
 typing-extensions==4.8.0
 
-# 이메일 발송을 위한 SMTP (파이썬 기본 라이브러리 smtplib 사용)
-# 추가 라이브러리 불필요
+# 추가 데이터 처리
+openpyxl==3.1.2
+xlrd==2.0.1
+
+# 날짜/시간 처리
+python-dateutil==2.8.2
+
+# JSON 처리 강화
+ujson==5.8.0
+
+# 로깅 강화
+colorlog==6.7.0
+
+# 수학 연산 최적화
+scipy==1.11.3
