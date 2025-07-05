@@ -66,13 +66,11 @@ class RegisterResponse(BaseModel):
 # ─── JWT 토큰 import ──────────────────────────────────────────────
 try:
     from utils.jwt_utils import create_access_token
-
     JWT_AVAILABLE = True
     logger.info("✅ JWT 유틸리티 로드 성공")
 except ImportError:
     JWT_AVAILABLE = False
     logger.warning("⚠️ JWT 유틸리티 없음 - JWT 토큰 발급 불가")
-
 
     def create_access_token(user_data):
         return None
@@ -135,6 +133,151 @@ async def login_with_email(request: EmailPasswordLogin):
                 "token_type": "Bearer",
                 "expires_in": 86400
             })
+
+        return JSONResponse(content=response_content)
+
+    except auth.UserNotFoundError:
+        logger.warning(f"⚠️ 존재하지 않는 사용자: {request.email}")
+        raise HTTPException(status_code=404, detail="존재하지 않는 사용자입니다.")
+    except Exception as e:
+        logger.error(f"❌ 로그인 처리 중 오류: {e}")
+        raise HTTPException(status_code=500, detail="로그인 처리 중 오류가 발생했습니다.")
+
+
+# ✅ 구글 로그인 (★ 기존 방식 그대로 유지 ★)
+@router.post("/google-login", summary="구글 로그인")
+async def google_login(request: GoogleLoginRequest):
+    """구글 로그인 (기존 연동 방식 유지 - JWT 토큰 없음)"""
+    try:
+        decoded_token = auth.verify_id_token(request.id_token)
+        uid = decoded_token["uid"]
+        email = decoded_token.get("email")
+        name = decoded_token.get("name")
+        picture = decoded_token.get("picture")
+
+        await save_user(uid=uid, email=email, name=name, picture=picture)
+
+        # ★ 기존 응답 형태 그대로 유지 (JWT 토큰 없음) ★
+        return JSONResponse(
+            content={
+                "message": "구글 로그인이 완료되었습니다.",
+                "user": {"uid": uid, "email": email, "name": name, "picture": picture}
+            }
+        )
+    except auth.InvalidIdTokenError:
+        raise HTTPException(status_code=401, detail="유효하지 않은 구글 토큰입니다.")
+    except Exception as e:
+        logging.error(f"Google login error: {e}")
+        raise HTTPException(status_code=500, detail="구글 로그인 중 오류가 발생했습니다.")
+
+
+# 🆕 이메일/비밀번호 회원가입 (JWT 토큰 발급)
+@router.post("/register", summary="이메일/비밀번호 회원가입", response_model=RegisterResponse)
+async def register_with_email(request: EmailPasswordRegister):
+    """회원가입 후 JWT 토큰 발급"""
+    logger.info(f"🚀 회원가입 요청 시작: {request.email}")
+
+    try:
+        # 1. Firebase 사용자 생성
+        logger.info(f"🔥 Firebase 사용자 생성 시작...")
+        user_record = auth.create_user(
+            email=request.email,
+            password=request.password,
+            display_name=request.name,
+            email_verified=False
+        )
+        logger.info(f"✅ Firebase 사용자 생성 완료: uid={user_record.uid}")
+
+        # 2. JWT 토큰 생성용 사용자 정보
+        user_data = {
+            'uid': user_record.uid,
+            'email': request.email,
+            'name': request.name,
+            'picture': '',
+            'email_verified': False
+        }
+
+        # 3. JWT 토큰 생성 (가능한 경우)
+        jwt_token = None
+        if JWT_AVAILABLE:
+            jwt_token = create_access_token(user_data)
+            logger.info(f"✅ JWT 토큰 생성 완료: {request.email}")
+
+        # 4. 사용자 정보 DB 저장
+        await save_user(
+            uid=user_record.uid,
+            email=request.email,
+            name=request.name
+        )
+
+        # 5. 이메일 인증 링크 생성 (선택적)
+        verification_link = None
+        email_sent = False
+        email_error = None
+
+        try:
+            verification_link = auth.generate_email_verification_link(request.email)
+            logger.info(f"✅ 이메일 인증 링크 생성 완료")
+
+            # SMTP 설정 확인 및 이메일 발송
+            smtp_configured, smtp_message = email_sender.check_smtp_config()
+            if smtp_configured:
+                email_sent, email_message = email_sender.send_verification_email(
+                    to_email=request.email,
+                    verification_link=verification_link,
+                    user_name=request.name
+                )
+                if not email_sent:
+                    email_error = email_message
+            else:
+                email_error = "SMTP 설정이 완료되지 않았습니다."
+
+        except Exception as e:
+            logger.warning(f"⚠️ 이메일 처리 실패: {e}")
+            email_error = str(e)
+
+        # 6. 응답 생성
+        response_data = {
+            "message": "회원가입이 완료되었습니다.",
+            "uid": user_record.uid,
+            "email": request.email,
+            "user": {
+                "uid": user_record.uid,
+                "email": request.email,
+                "name": request.name,
+                "picture": "",
+                "email_verified": False
+            },
+            "email_sent": email_sent,
+            "smtp_configured": smtp_configured
+        }
+
+        # JWT 토큰이 생성된 경우에만 추가
+        if jwt_token:
+            response_data.update({
+                "token": jwt_token,
+                "token_type": "Bearer",
+                "expires_in": 86400
+            })
+
+        if not email_sent and email_error:
+            response_data["email_error"] = email_error
+        if verification_link:
+            response_data["verification_link"] = verification_link
+
+        logger.info(f"🎉 회원가입 처리 완료 - JWT 토큰: {'✅' if jwt_token else '❌'}")
+
+        return JSONResponse(
+            status_code=201,
+            content=response_data
+        )
+
+    except auth.EmailAlreadyExistsError:
+        logger.warning(f"⚠️ 이미 존재하는 이메일: {request.email}")
+        raise HTTPException(status_code=400, detail="이미 존재하는 이메일 주소입니다.")
+    except Exception as e:
+        logger.error(f"❌ 회원가입 중 예외 발생: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"회원가입 중 오류가 발생했습니다: {str(e)}")
 
 
 # ─── JWT 토큰 검증 및 기타 API들 ──────────────────────────────────────
@@ -283,148 +426,3 @@ async def test_token(user=Depends(verify_firebase_token_optional)):
         "email": user.get("email"),
         "note": "이 API는 구버전 호환용입니다. JWT API를 사용하세요."
     }
-    content = response_content)
-
-    except auth.UserNotFoundError:
-    logger.warning(f"⚠️ 존재하지 않는 사용자: {request.email}")
-    raise HTTPException(status_code=404, detail="존재하지 않는 사용자입니다.")
-
-except Exception as e:
-logger.error(f"❌ 로그인 처리 중 오류: {e}")
-raise HTTPException(status_code=500, detail="로그인 처리 중 오류가 발생했습니다.")
-
-
-# ✅ 구글 로그인 (★ 기존 방식 그대로 유지 ★)
-@router.post("/google-login", summary="구글 로그인")
-async def google_login(request: GoogleLoginRequest):
-    """구글 로그인 (기존 연동 방식 유지 - JWT 토큰 없음)"""
-    try:
-        decoded_token = auth.verify_id_token(request.id_token)
-        uid = decoded_token["uid"]
-        email = decoded_token.get("email")
-        name = decoded_token.get("name")
-        picture = decoded_token.get("picture")
-
-        await save_user(uid=uid, email=email, name=name, picture=picture)
-
-        # ★ 기존 응답 형태 그대로 유지 (JWT 토큰 없음) ★
-        return JSONResponse(
-            content={
-                "message": "구글 로그인이 완료되었습니다.",
-                "user": {"uid": uid, "email": email, "name": name, "picture": picture}
-            }
-        )
-    except auth.InvalidIdTokenError:
-        raise HTTPException(status_code=401, detail="유효하지 않은 구글 토큰입니다.")
-    except Exception as e:
-        logging.error(f"Google login error: {e}")
-        raise HTTPException(status_code=500, detail="구글 로그인 중 오류가 발생했습니다.")
-
-
-# 🆕 이메일/비밀번호 회원가입 (JWT 토큰 발급)
-@router.post("/register", summary="이메일/비밀번호 회원가입", response_model=RegisterResponse)
-async def register_with_email(request: EmailPasswordRegister):
-    """회원가입 후 JWT 토큰 발급"""
-    logger.info(f"🚀 회원가입 요청 시작: {request.email}")
-
-    try:
-        # 1. Firebase 사용자 생성
-        logger.info(f"🔥 Firebase 사용자 생성 시작...")
-        user_record = auth.create_user(
-            email=request.email,
-            password=request.password,
-            display_name=request.name,
-            email_verified=False
-        )
-        logger.info(f"✅ Firebase 사용자 생성 완료: uid={user_record.uid}")
-
-        # 2. JWT 토큰 생성용 사용자 정보
-        user_data = {
-            'uid': user_record.uid,
-            'email': request.email,
-            'name': request.name,
-            'picture': '',
-            'email_verified': False
-        }
-
-        # 3. JWT 토큰 생성 (가능한 경우)
-        jwt_token = None
-        if JWT_AVAILABLE:
-            jwt_token = create_access_token(user_data)
-            logger.info(f"✅ JWT 토큰 생성 완료: {request.email}")
-
-        # 4. 사용자 정보 DB 저장
-        await save_user(
-            uid=user_record.uid,
-            email=request.email,
-            name=request.name
-        )
-
-        # 5. 이메일 인증 링크 생성 (선택적)
-        verification_link = None
-        email_sent = False
-        email_error = None
-
-        try:
-            verification_link = auth.generate_email_verification_link(request.email)
-            logger.info(f"✅ 이메일 인증 링크 생성 완료")
-
-            # SMTP 설정 확인 및 이메일 발송
-            smtp_configured, smtp_message = email_sender.check_smtp_config()
-            if smtp_configured:
-                email_sent, email_message = email_sender.send_verification_email(
-                    to_email=request.email,
-                    verification_link=verification_link,
-                    user_name=request.name
-                )
-                if not email_sent:
-                    email_error = email_message
-            else:
-                email_error = "SMTP 설정이 완료되지 않았습니다."
-
-        except Exception as e:
-            logger.warning(f"⚠️ 이메일 처리 실패: {e}")
-            email_error = str(e)
-
-        # 6. 응답 생성
-        response_data = {
-            "message": "회원가입이 완료되었습니다.",
-            "uid": user_record.uid,
-            "email": request.email,
-            "user": {
-                "uid": user_record.uid,
-                "email": request.email,
-                "name": request.name,
-                "picture": "",
-                "email_verified": False
-            },
-            "email_sent": email_sent,
-            "smtp_configured": smtp_configured
-        }
-
-        # JWT 토큰이 생성된 경우에만 추가
-        if jwt_token:
-            response_data.update({
-                "token": jwt_token,
-                "token_type": "Bearer",
-                "expires_in": 86400
-            })
-
-        if not email_sent and email_error:
-            response_data["email_error"] = email_error
-        if verification_link:
-            response_data["verification_link"] = verification_link
-
-        logger.info(f"🎉 회원가입 처리 완료 - JWT 토큰: {'✅' if jwt_token else '❌'}")
-
-        return JSONResponse(
-            status_code=201,
-            content=response_data
-        )
-
-    except auth.EmailAlreadyExistsError:
-        logger.warning(f"⚠️ 이미 존재하는 이메일: {request.email}")
-        raise HTTPException(status_code=400, detail="이미 존재하는 이메일 주소입니다.")
-    except Exception as e:
-        logger.error(f"❌ 회원가입 중 예외 발생: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"회원가입 중 오류가 발생했습니다: {str(e)}")
