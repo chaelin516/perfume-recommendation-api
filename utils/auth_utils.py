@@ -1,4 +1,4 @@
-# utils/auth_utils.py - 개선된 버전
+# utils/auth_utils.py - JWT 기능 추가 버전
 import firebase_admin
 from firebase_admin import credentials, auth
 from fastapi import Header, HTTPException, Depends
@@ -6,6 +6,9 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import os
 import json
 import logging
+
+# 🆕 JWT 관련 import 추가
+from utils.jwt_utils import verify_access_token
 
 logger = logging.getLogger(__name__)
 
@@ -140,8 +143,78 @@ async def get_dummy_user():
     }
 
 
+# 🆕 JWT 토큰 검증 함수
+async def verify_jwt_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """JWT 토큰 검증 (Flutter 앱용)"""
+    if not credentials:
+        raise HTTPException(status_code=401, detail="인증 토큰이 제공되지 않았습니다.")
+
+    try:
+        token = credentials.credentials
+        payload = verify_access_token(token)
+
+        if not payload:
+            raise HTTPException(status_code=401, detail="유효하지 않은 토큰입니다.")
+
+        logger.info(f"[JWT AUTH SUCCESS] 사용자 인증 완료: {payload.get('name')} ({payload.get('email')})")
+        return payload
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[JWT AUTH ERROR] {e}")
+        raise HTTPException(status_code=401, detail="JWT 토큰 검증에 실패했습니다.")
+
+
+# 🆕 유연한 인증 함수 (Firebase ID 토큰 또는 JWT 토큰 모두 지원)
+async def verify_token_flexible(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Firebase ID 토큰 또는 JWT 토큰을 모두 지원하는 검증"""
+    if not credentials:
+        raise HTTPException(status_code=401, detail="인증 토큰이 제공되지 않았습니다.")
+
+    token = credentials.credentials
+
+    # 1. 먼저 JWT 토큰으로 시도 (Flutter 앱용)
+    jwt_payload = verify_access_token(token)
+    if jwt_payload:
+        logger.info(f"[JWT AUTH] 사용자 인증 완료: {jwt_payload.get('email')}")
+        return jwt_payload
+
+    # 2. JWT 실패시 Firebase ID 토큰으로 시도 (웹/다른 클라이언트용)
+    if FIREBASE_AVAILABLE:
+        try:
+            decoded_token = auth.verify_id_token(token)
+            logger.info(f"[FIREBASE AUTH] 사용자 인증 완료: {decoded_token.get('email')}")
+            return decoded_token
+        except Exception as e:
+            logger.error(f"[FIREBASE AUTH ERROR] {e}")
+
+    # 3. 둘 다 실패시
+    raise HTTPException(status_code=401, detail="유효하지 않은 토큰입니다.")
+
+
+# 🆕 JWT 전용 인증 함수 (추천 - Flutter 앱용)
+async def verify_jwt_only(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """JWT 토큰만 검증 (Flutter 앱 전용)"""
+    return await verify_jwt_token(credentials)
+
+
 async def verify_firebase_token_optional(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """선택적 Firebase 인증 (Firebase 없이도 작동)"""
+    """선택적 Firebase 인증 (Firebase 없이도 작동) + JWT 지원"""
+    if not credentials:
+        if not FIREBASE_AVAILABLE:
+            logger.warning("⚠️ Firebase 없이 더미 사용자로 인증 우회")
+            return await get_dummy_user()
+        raise HTTPException(status_code=401, detail="인증 토큰이 제공되지 않았습니다.")
+
+    # JWT 토큰 먼저 시도
+    token = credentials.credentials
+    jwt_payload = verify_access_token(token)
+    if jwt_payload:
+        logger.info(f"[JWT AUTH] 사용자 인증 완료: {jwt_payload.get('email')}")
+        return jwt_payload
+
+    # Firebase 사용 가능하면 Firebase ID 토큰 시도
     if not FIREBASE_AVAILABLE:
         logger.warning("⚠️ Firebase 없이 더미 사용자로 인증 우회")
         return await get_dummy_user()
