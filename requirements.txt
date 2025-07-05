@@ -30,6 +30,12 @@ sqlmodel==0.0.22
 # Firebase 인증 (최신 안정)
 firebase-admin==6.5.0
 
+# 🆕 JWT 인증 및 보안 (Flutter 앱 지원)
+PyJWT==2.9.0
+cryptography==43.0.1
+passlib[bcrypt]==1.7.4
+bcrypt==4.2.0
+
 # 기타 유틸리티
 requests==2.32.3
 Pillow==10.4.0

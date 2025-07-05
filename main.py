@@ -1,4 +1,4 @@
-# main.py - Whiff API Server (신고 기능 추가 버전)
+# main.py - Whiff API Server (404 오류 해결 버전)
 
 import os
 import logging
@@ -6,7 +6,8 @@ import traceback
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from fastapi.staticfiles import StaticFiles  # 🆕 추가
 
 # ─── 로깅 설정 ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -60,6 +61,45 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
 )
+
+# ─── Static 파일 서빙 설정 (404 오류 해결) ──────────────────────────────────────
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if not os.path.exists(static_dir):
+    os.makedirs(static_dir)
+    logger.info(f"📁 Static 디렉토리 생성: {static_dir}")
+
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+# ─── favicon 및 모바일 아이콘 404 오류 해결 ─────────────────────────────────────
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Favicon 요청 처리 - 204 No Content 반환"""
+    logger.debug("📱 Favicon 요청 처리")
+    return Response(status_code=204)
+
+@app.get("/apple-touch-icon.png", include_in_schema=False)
+@app.get("/apple-touch-icon-precomposed.png", include_in_schema=False)
+@app.get("/apple-touch-icon-120x120.png", include_in_schema=False)
+@app.get("/apple-touch-icon-120x120-precomposed.png", include_in_schema=False)
+async def apple_touch_icon():
+    """Apple Touch Icon 요청 처리 - 204 No Content 반환"""
+    logger.debug("🍎 Apple Touch Icon 요청 처리")
+    return Response(status_code=204)
+
+# ─── 로봇 및 기타 파일 404 오류 해결 ────────────────────────────────────────────
+@app.get("/robots.txt", include_in_schema=False)
+async def robots():
+    """Robots.txt 요청 처리"""
+    return Response(
+        content="User-agent: *\nDisallow: /",
+        media_type="text/plain",
+        status_code=200
+    )
+
+@app.get("/sitemap.xml", include_in_schema=False)
+async def sitemap():
+    """Sitemap 요청 처리"""
+    return Response(status_code=204)
 
 
 # ─── 라우터 등록 함수 ─────────────────────────────────────────────────────────────
@@ -318,7 +358,7 @@ async def startup_event():
             logger.warning(f"  ⚠️ Firebase 연결 실패: {e}")
 
         # 📁 데이터 디렉토리 확인
-        data_dirs = ["data", "data/reports"]
+        data_dirs = ["data", "data/reports", "static"]
         for dir_path in data_dirs:
             if not os.path.exists(dir_path):
                 os.makedirs(dir_path, exist_ok=True)
@@ -434,20 +474,45 @@ def head_health_check():
 @app.get("/status", summary="서버 상태 확인", operation_id="get_server_status")
 def get_server_status():
     try:
+        # Firebase 상태 확인
+        firebase_status = None
+        try:
+            from utils.auth_utils import get_firebase_status
+            firebase_status = get_firebase_status()
+        except Exception as e:
+            logger.error(f"Firebase 상태 확인 실패: {e}")
+
+        # SMTP 상태 확인
+        smtp_status = None
+        try:
+            from utils.email_sender import email_sender
+            smtp_valid, smtp_message = email_sender.check_smtp_config()
+            smtp_status = {"configured": smtp_valid, "message": smtp_message}
+        except Exception as e:
+            logger.error(f"SMTP 상태 확인 실패: {e}")
+
         return {
-            "status": "running",
-            "service": "Whiff API Server",
+            "service": "Whiff API",
             "version": "1.4.0",
+            "status": "running",
             "environment": "production" if os.getenv("RENDER") else "development",
-            "port": os.getenv("PORT", "8000"),
-            "available_routers": {
-                "perfumes": "향수 기본 정보 조회",
-                "perfumes_recommend": "🎯 클러스터 기반 추천",
-                "perfumes_recommend_2nd": "🤖 2차 정밀 추천",
+            "firebase": firebase_status,
+            "smtp": smtp_status,
+            "features": {
+                "auth": "Firebase Authentication",
+                "database": "SQLite + JSON Files",
+                "ml_model": "TensorFlow (Lazy Loading)",
+                "emotion_ai": "Custom Emotion Analyzer",
+                "deployment": "Render.com",
+                "email": "SMTP (Gmail)"
+            },
+            "active_endpoints": {
+                "perfumes": "향수 정보 및 1차 추천",
+                "perfumes_2nd": "2차 추천 (노트 기반)",
                 "diaries": "시향 일기 (일부 기능)",
                 "auth": "사용자 인증",
                 "users": "사용자 관리",
-                "reports": "🆕 신고 관리 시스템"
+                "reports": "신고 관리 시스템"
             },
             "deleted_endpoints": {
                 "courses": "시향 코스 추천 (완전 삭제)",
@@ -517,6 +582,7 @@ if __name__ == "__main__":
     logger.info("📚 API 문서: http://localhost:{port}/docs")
     logger.info("🔍 ReDoc: http://localhost:{port}/redoc")
     logger.info("🆕 신고 기능: /reports/ 엔드포인트 활성화")
+    logger.info("🔧 404 오류 해결: favicon, apple-touch-icon 처리 완료")
 
     uvicorn.run(
         "main:app",

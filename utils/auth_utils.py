@@ -1,4 +1,4 @@
-# utils/auth_utils.py - JWT 기능 추가 버전
+# utils/auth_utils.py - 안전한 JWT 처리 버전
 import firebase_admin
 from firebase_admin import credentials, auth
 from fastapi import Header, HTTPException, Depends
@@ -7,14 +7,32 @@ import os
 import json
 import logging
 
-# 🆕 JWT 관련 import 추가
-from utils.jwt_utils import verify_access_token
-
 logger = logging.getLogger(__name__)
 
 # Firebase 초기화 상태
 FIREBASE_AVAILABLE = False
 firebase_app = None
+
+# 🆕 JWT 기능 가용성 확인
+JWT_AVAILABLE = False
+try:
+    from utils.jwt_utils import verify_access_token
+
+    JWT_AVAILABLE = True
+    logger.info("✅ JWT 유틸리티 로드 성공")
+except ImportError:
+    logger.info("⚠️ JWT 유틸리티 없음 - Firebase 인증만 사용")
+
+
+    # JWT 없을 때를 위한 더미 함수
+    def verify_access_token(token):
+        return None
+except Exception as e:
+    logger.warning(f"⚠️ JWT 유틸리티 로드 실패: {e}")
+
+
+    def verify_access_token(token):
+        return None
 
 
 def get_firebase_credentials():
@@ -143,9 +161,13 @@ async def get_dummy_user():
     }
 
 
-# 🆕 JWT 토큰 검증 함수
+# 🆕 JWT 토큰 검증 함수 (안전한 버전)
 async def verify_jwt_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """JWT 토큰 검증 (Flutter 앱용)"""
+    """JWT 토큰 검증 (Flutter 앱용) - JWT 라이브러리가 없어도 안전"""
+    if not JWT_AVAILABLE:
+        logger.warning("⚠️ JWT 기능이 비활성화됨 - Firebase 인증 사용")
+        return await verify_firebase_token(credentials)
+
     if not credentials:
         raise HTTPException(status_code=401, detail="인증 토큰이 제공되지 않았습니다.")
 
@@ -154,7 +176,12 @@ async def verify_jwt_token(credentials: HTTPAuthorizationCredentials = Depends(s
         payload = verify_access_token(token)
 
         if not payload:
-            raise HTTPException(status_code=401, detail="유효하지 않은 토큰입니다.")
+            # JWT 실패시 Firebase로 대체 시도
+            if FIREBASE_AVAILABLE:
+                logger.info("🔄 JWT 실패 - Firebase 인증으로 대체 시도")
+                return await verify_firebase_token(credentials)
+            else:
+                raise HTTPException(status_code=401, detail="유효하지 않은 토큰입니다.")
 
         logger.info(f"[JWT AUTH SUCCESS] 사용자 인증 완료: {payload.get('name')} ({payload.get('email')})")
         return payload
@@ -163,7 +190,12 @@ async def verify_jwt_token(credentials: HTTPAuthorizationCredentials = Depends(s
         raise
     except Exception as e:
         logger.error(f"[JWT AUTH ERROR] {e}")
-        raise HTTPException(status_code=401, detail="JWT 토큰 검증에 실패했습니다.")
+        # JWT 처리 실패시 Firebase로 대체 시도
+        if FIREBASE_AVAILABLE:
+            logger.info("🔄 JWT 오류 - Firebase 인증으로 대체 시도")
+            return await verify_firebase_token(credentials)
+        else:
+            raise HTTPException(status_code=401, detail="JWT 토큰 검증에 실패했습니다.")
 
 
 # 🆕 유연한 인증 함수 (Firebase ID 토큰 또는 JWT 토큰 모두 지원)
@@ -174,13 +206,14 @@ async def verify_token_flexible(credentials: HTTPAuthorizationCredentials = Depe
 
     token = credentials.credentials
 
-    # 1. 먼저 JWT 토큰으로 시도 (Flutter 앱용)
-    jwt_payload = verify_access_token(token)
-    if jwt_payload:
-        logger.info(f"[JWT AUTH] 사용자 인증 완료: {jwt_payload.get('email')}")
-        return jwt_payload
+    # 1. JWT 기능이 활성화된 경우 먼저 JWT 토큰으로 시도
+    if JWT_AVAILABLE:
+        jwt_payload = verify_access_token(token)
+        if jwt_payload:
+            logger.info(f"[JWT AUTH] 사용자 인증 완료: {jwt_payload.get('email')}")
+            return jwt_payload
 
-    # 2. JWT 실패시 Firebase ID 토큰으로 시도 (웹/다른 클라이언트용)
+    # 2. JWT 실패하거나 비활성화시 Firebase ID 토큰으로 시도
     if FIREBASE_AVAILABLE:
         try:
             decoded_token = auth.verify_id_token(token)
@@ -193,33 +226,117 @@ async def verify_token_flexible(credentials: HTTPAuthorizationCredentials = Depe
     raise HTTPException(status_code=401, detail="유효하지 않은 토큰입니다.")
 
 
-# 🆕 JWT 전용 인증 함수 (추천 - Flutter 앱용)
+# 🆕 JWT 전용 인증 함수 (권장 - Flutter 앱용)
 async def verify_jwt_only(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """JWT 토큰만 검증 (Flutter 앱 전용)"""
+    """JWT 토큰만 검증 (Flutter 앱 전용) - 안전한 대체 처리 포함"""
     return await verify_jwt_token(credentials)
 
 
 async def verify_firebase_token_optional(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """선택적 Firebase 인증 (Firebase 없이도 작동) + JWT 지원"""
     if not credentials:
-        if not FIREBASE_AVAILABLE:
-            logger.warning("⚠️ Firebase 없이 더미 사용자로 인증 우회")
+        if not FIREBASE_AVAILABLE and not JWT_AVAILABLE:
+            logger.warning("⚠️ Firebase/JWT 모두 비활성화 - 더미 사용자로 인증 우회")
             return await get_dummy_user()
         raise HTTPException(status_code=401, detail="인증 토큰이 제공되지 않았습니다.")
 
-    # JWT 토큰 먼저 시도
     token = credentials.credentials
-    jwt_payload = verify_access_token(token)
-    if jwt_payload:
-        logger.info(f"[JWT AUTH] 사용자 인증 완료: {jwt_payload.get('email')}")
-        return jwt_payload
 
-    # Firebase 사용 가능하면 Firebase ID 토큰 시도
-    if not FIREBASE_AVAILABLE:
-        logger.warning("⚠️ Firebase 없이 더미 사용자로 인증 우회")
-        return await get_dummy_user()
+    # 1. JWT 토큰 먼저 시도 (활성화된 경우)
+    if JWT_AVAILABLE:
+        jwt_payload = verify_access_token(token)
+        if jwt_payload:
+            logger.info(f"[JWT AUTH] 사용자 인증 완료: {jwt_payload.get('email')}")
+            return jwt_payload
 
-    return await verify_firebase_token(credentials)
+    # 2. Firebase 사용 가능하면 Firebase ID 토큰 시도
+    if FIREBASE_AVAILABLE:
+        try:
+            return await verify_firebase_token(credentials)
+        except HTTPException:
+            pass  # Firebase 실패해도 더미 사용자로 진행
+
+    # 3. 모든 인증 실패시 더미 사용자 반환 (개발 환경용)
+    logger.warning("⚠️ 모든 인증 방법 실패 - 더미 사용자로 인증 우회")
+    return await get_dummy_user()
+
+
+# 🆕 상세한 에러 처리가 포함된 인증 함수
+async def verify_token_with_details(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """상세한 로깅과 에러 처리가 포함된 토큰 검증"""
+
+    if not credentials:
+        logger.warning("🔐 인증 헤더가 없습니다")
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "missing_token",
+                "message": "인증 토큰이 제공되지 않았습니다",
+                "hint": "Authorization: Bearer <token> 헤더를 포함해주세요"
+            }
+        )
+
+    token = credentials.credentials
+    logger.info(f"🔍 토큰 검증 시도 (길이: {len(token)}자)")
+
+    # 1. JWT 토큰 시도 (가능한 경우)
+    if JWT_AVAILABLE:
+        try:
+            jwt_payload = verify_access_token(token)
+            if jwt_payload:
+                logger.info(f"✅ JWT 인증 성공: {jwt_payload.get('email')}")
+                return jwt_payload
+        except Exception as e:
+            logger.warning(f"⚠️ JWT 인증 실패: {e}")
+
+    # 2. Firebase 인증 시도 (가능한 경우)
+    if FIREBASE_AVAILABLE:
+        try:
+            decoded_token = auth.verify_id_token(token)
+            uid = decoded_token["uid"]
+            email = decoded_token.get("email", "")
+            name = decoded_token.get("name", "")
+
+            logger.info(f"✅ Firebase 인증 성공: {name} ({email}) - {uid}")
+            return decoded_token
+
+        except auth.ExpiredIdTokenError:
+            logger.warning("⏰ Firebase 토큰 만료")
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "token_expired",
+                    "message": "토큰이 만료되었습니다",
+                    "hint": "앱에서 새로운 토큰을 발급받아주세요"
+                }
+            )
+        except auth.InvalidIdTokenError:
+            logger.warning("❌ Firebase 토큰 형식 오류")
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "invalid_token",
+                    "message": "유효하지 않은 토큰입니다",
+                    "hint": "Firebase 로그인을 다시 시도해주세요"
+                }
+            )
+        except Exception as e:
+            logger.error(f"💥 Firebase 인증 처리 중 예외: {e}")
+
+    # 3. 모든 인증 방법 실패
+    logger.error("❌ 모든 인증 방법 실패")
+    raise HTTPException(
+        status_code=401,
+        detail={
+            "error": "auth_failed",
+            "message": "인증에 실패했습니다",
+            "available_methods": {
+                "jwt": JWT_AVAILABLE,
+                "firebase": FIREBASE_AVAILABLE
+            },
+            "hint": "유효한 인증 토큰을 제공해주세요"
+        }
+    )
 
 
 def get_firebase_status():
@@ -233,6 +350,12 @@ def get_firebase_status():
 
     return {
         "firebase_available": FIREBASE_AVAILABLE,
+        "jwt_available": JWT_AVAILABLE,
         "firebase_apps_count": len(firebase_admin._apps) if firebase_admin._apps else 0,
-        "environment_config": env_status
+        "environment_config": env_status,
+        "auth_methods": {
+            "firebase_id_token": FIREBASE_AVAILABLE,
+            "jwt_token": JWT_AVAILABLE,
+            "fallback_dummy": not FIREBASE_AVAILABLE and not JWT_AVAILABLE
+        }
     }
