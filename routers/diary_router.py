@@ -14,11 +14,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 # 의존성 모듈들
-from utils.firebase_utils import verify_firebase_token_optional, get_firebase_status
-from utils.user_utils import get_default_user
-from utils.emotion_analyzer import rule_based_emotion_analysis
-from utils.file_utils import save_uploaded_image, delete_uploaded_image
-from utils.validation_utils import validate_diary_content, sanitize_content
+from utils.auth_utils import verify_firebase_token_optional, get_firebase_status
+import asyncio
+import re
 
 # ─── 로깅 설정 ───────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
@@ -66,7 +64,136 @@ class DiaryUpdateRequest(BaseModel):
     location: Optional[str] = Field(None, max_length=100, description="장소 수정")
 
 
-# ─── 데이터 파일 관리 함수들 ──────────────────────────────────────────────────────
+# ─── 유틸리티 함수들 ────────────────────────────────────────────────────────────
+async def get_default_user():
+    """기본 사용자 정보 반환"""
+    return {
+        "uid": "anonymous_user",
+        "email": "anonymous@example.com",
+        "name": "익명 사용자",
+        "picture": ""
+    }
+
+
+def sanitize_content(content: str) -> str:
+    """내용 정리 및 검증"""
+    if not content:
+        return ""
+
+    # HTML 태그 제거
+    content = re.sub(r'<[^>]+>', '', content)
+
+    # 특수 문자 정리
+    content = content.strip()
+
+    # 길이 제한
+    if len(content) > 2000:
+        content = content[:2000]
+
+    return content
+
+
+async def rule_based_emotion_analysis(content: str, perfume_name: str) -> Dict:
+    """룰 기반 감정 분석 (간단한 구현)"""
+    try:
+        if not content or not content.strip():
+            return {
+                "success": False,
+                "primary_emotion": "중립",
+                "confidence": 0.0,
+                "emotion_tags": ["#neutral"],
+                "analysis_method": "no_content"
+            }
+
+        content_lower = content.lower()
+
+        # 간단한 감정 키워드 매칭
+        emotion_keywords = {
+            "행복": ["좋다", "행복", "기쁘다", "즐겁다", "만족", "좋아요", "최고"],
+            "사랑": ["사랑", "로맨틱", "달콤", "설레", "매력", "감동"],
+            "평온": ["평온", "차분", "고요", "안정", "편안", "릴렉스"],
+            "상쾌": ["상쾌", "시원", "깔끔", "산뜻", "청량", "프레시"],
+            "우아": ["우아", "고급", "세련", "품격", "클래식", "엘레간트"],
+            "중립": ["보통", "그냥", "무난", "평범"]
+        }
+
+        detected_emotions = []
+        for emotion, keywords in emotion_keywords.items():
+            for keyword in keywords:
+                if keyword in content_lower:
+                    detected_emotions.append(emotion)
+                    break
+
+        if not detected_emotions:
+            detected_emotions = ["중립"]
+
+        primary_emotion = detected_emotions[0]
+        confidence = min(0.8, len(detected_emotions) * 0.3 + 0.2)
+
+        # 태그 생성
+        emotion_tags = [f"#{emotion}" for emotion in detected_emotions[:3]]
+
+        return {
+            "success": True,
+            "primary_emotion": primary_emotion,
+            "confidence": confidence,
+            "emotion_tags": emotion_tags,
+            "analysis_method": "rule_based",
+            "context_detected": {
+                "has_positive_words": any(word in content_lower for word in ["좋다", "행복", "만족"]),
+                "has_negative_words": any(word in content_lower for word in ["싫다", "나쁘다", "실망"]),
+                "content_length": len(content)
+            },
+            "perfume_type": "기타"
+        }
+
+    except Exception as e:
+        logger.error(f"❌ 감정 분석 오류: {e}")
+        return {
+            "success": False,
+            "primary_emotion": "중립",
+            "confidence": 0.1,
+            "emotion_tags": ["#error"],
+            "analysis_method": "error"
+        }
+
+
+async def save_uploaded_image(file_content: bytes, diary_id: str, filename: str) -> str:
+    """이미지 파일 저장 (간단한 구현)"""
+    try:
+        # 파일 확장자 추출
+        file_ext = filename.split('.')[-1].lower() if '.' in filename else 'jpg'
+
+        # 저장할 파일명 생성
+        save_filename = f"{diary_id}.{file_ext}"
+        save_path = DIARY_IMAGES_DIR / save_filename
+
+        # 파일 저장
+        with open(save_path, 'wb') as f:
+            f.write(file_content)
+
+        # 상대 경로 반환
+        return f"diary_images/{save_filename}"
+
+    except Exception as e:
+        logger.error(f"❌ 이미지 저장 오류: {e}")
+        return None
+
+
+async def delete_uploaded_image(image_path: str) -> bool:
+    """업로드된 이미지 삭제"""
+    try:
+        if image_path:
+            full_path = DATA_DIR / image_path
+            if full_path.exists():
+                full_path.unlink()
+                return True
+        return False
+    except Exception as e:
+        logger.error(f"❌ 이미지 삭제 오류: {e}")
+        return False
+
+
 def load_diary_data() -> List[Dict]:
     """일기 데이터 로드"""
     try:
