@@ -1,11 +1,11 @@
-# db/session.py
+# db/session.py - 수정된 버전
 import os
 from sqlmodel import SQLModel, create_engine, Session
 import logging
 
 logger = logging.getLogger(__name__)
 
-# 데이터베이스 URL 설정
+# 데이터베이스 URL 설정 (환경변수 우선, 없으면 기본값)
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./whiff.db")
 
 # SQLite의 경우 특별 처리
@@ -55,3 +55,31 @@ try:
     init_db()
 except Exception as e:
     logger.warning(f"⚠️ 데이터베이스 자동 초기화 실패: {e}")
+
+
+# 데이터베이스 상태 확인 함수
+def check_database_status():
+    """데이터베이스 상태 확인"""
+    try:
+        # 데이터베이스 파일 존재 확인
+        if DATABASE_URL.startswith("sqlite"):
+            db_file = DATABASE_URL.replace("sqlite:///", "").replace("sqlite://", "")
+            file_exists = os.path.exists(db_file)
+            file_size = os.path.getsize(db_file) if file_exists else 0
+
+            return {
+                "database_url": DATABASE_URL,
+                "file_exists": file_exists,
+                "file_size": file_size,
+                "file_path": db_file
+            }
+        else:
+            return {
+                "database_url": DATABASE_URL,
+                "type": "non-sqlite"
+            }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "database_url": DATABASE_URL
+        }
