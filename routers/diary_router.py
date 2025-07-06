@@ -1,904 +1,1220 @@
-# routers/diary_router.py - 감정 태그 + 이미지 업로드 완전 통합 버전
+# routers/diary_router.py - 감정 태그 + 이미지 업로드 + 강화된 삭제 기능 완전 통합 버전
 
-from fastapi import APIRouter, Query, HTTPException, BackgroundTasks, Body, File, UploadFile, Form, Request
-from fastapi.responses import JSONResponse
-from schemas.diary import (
-    DiaryCreateRequest, DiaryResponse, DiaryWithImageCreateRequest,
-    ImageUploadResponse, ImageStatsResponse, ImageDeleteResponse
-)
-from schemas.common import BaseResponse
-from utils.image_utils import (
-    save_uploaded_image, get_image_url, get_thumbnail_url,
-    delete_image_files, get_upload_stats, validate_image_file
-)
-from datetime import datetime, date
-from typing import Optional, List, Dict, Any
 import os
 import json
 import uuid
 import logging
 import asyncio
-import time
-from collections import Counter
-from pydantic import BaseModel, Field
-import re
+from datetime import datetime
+from typing import List, Optional, Dict, Any
+from pathlib import Path
 
-# 🎭 로거 설정
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Query, Form
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+
+# 의존성 모듈들
+from utils.firebase_utils import verify_firebase_token_optional, get_firebase_status
+from utils.user_utils import get_default_user
+from utils.emotion_analyzer import rule_based_emotion_analysis
+from utils.file_utils import save_uploaded_image, delete_uploaded_image
+from utils.validation_utils import validate_diary_content, sanitize_content
+
+# ─── 로깅 설정 ───────────────────────────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("diary_router")
 
-# ✅ 라우터 생성
-router = APIRouter(prefix="/diaries", tags=["Diary"])
+# ─── 라우터 생성 ─────────────────────────────────────────────────────────────────
+router = APIRouter(
+    prefix="/diaries",
+    tags=["시향 일기"],
+    responses={404: {"description": "Not found"}}
+)
 
-# 📂 데이터 파일 경로
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DIARY_PATH = os.path.join(BASE_DIR, "../data/diary_data.json")
+# ─── 데이터 경로 설정 ────────────────────────────────────────────────────────────
+DATA_DIR = Path("data")
+DIARY_DATA_PATH = DATA_DIR / "diary_data.json"
+DIARY_IMAGES_DIR = DATA_DIR / "diary_images"
 
-# 🎯 완전한 룰 기반 감정 분석 사전 정의
-EMOTION_RULES = {
-    "기쁨": {
-        "keywords": [
-            "좋", "훌륭", "향긋", "달콤", "상큼", "깔끔", "사랑", "완벽", "최고", "멋진",
-            "환상적", "놀라운", "아름다운", "우아한", "세련된", "고급스러운", "매력적",
-            "기분좋", "행복", "즐거운", "만족", "감동", "황홀", "반함", "좋아해", "마음에 들",
-            "포근", "따뜻", "편안", "부드러운", "은은한", "우아", "고혹적", "신비로운"
-        ],
-        "tags": ["#happy", "#joyful", "#pleasant", "#nice", "#satisfied", "#lovely"],
-        "base_confidence": 0.7
-    },
-    "설렘": {
-        "keywords": [
-            "설레", "두근", "떨림", "기대", "호기심", "궁금", "신기", "새로운", "특별한",
-            "독특한", "매혹적", "흥미로운", "재미있", "신선한", "생동감", "활기찬",
-            "짜릿", "스릴", "흥분", "가슴이 뛰", "심장이", "떨려"
-        ],
-        "tags": ["#excited", "#curious", "#anticipation", "#thrilling", "#fascinating"],
-        "base_confidence": 0.65
-    },
-    "평온": {
-        "keywords": [
-            "평온", "고요", "잔잔", "차분", "안정", "평화", "조용", "편안", "여유로운",
-            "느긋", "릴렉스", "휴식", "치유", "힐링", "진정", "마음이 편해", "스트레스",
-            "피로가 풀", "숨을 쉬기", "깊게 호흡", "명상", "사색", "생각에 잠기"
-        ],
-        "tags": ["#calm", "#peaceful", "#relaxed", "#healing", "#serene"],
-        "base_confidence": 0.6
-    },
-    "자신감": {
-        "keywords": [
-            "자신감", "당당", "세련", "고급", "품격", "우아", "카리스마", "멋있", "섹시",
-            "매력적", "강렬", "파워풀", "임팩트", "프로페셔널", "성숙한", "어른스러운"
-        ],
-        "tags": ["#confident", "#elegant", "#sophisticated", "#charismatic", "#powerful"],
-        "base_confidence": 0.65
-    },
-    "활력": {
-        "keywords": [
-            "활력", "에너지", "생동감", "활기", "싱그러운", "상쾌", "시원", "청량감",
-            "톡톡", "팝", "활발", "역동적", "젊은", "발랄", "명랑", "생기발랄"
-        ],
-        "tags": ["#energetic", "#fresh", "#vibrant", "#lively", "#dynamic"],
-        "base_confidence": 0.6
-    },
-    "로맨틱": {
-        "keywords": [
-            "로맨틱", "낭만", "사랑", "달콤", "부드러운", "따뜻한", "포근", "감미로운",
-            "달콤쌉쌀", "심쿵", "로맨스", "데이트", "연인", "커플", "달달한"
-        ],
-        "tags": ["#romantic", "#sweet", "#lovely", "#tender", "#affectionate"],
-        "base_confidence": 0.7
-    },
-    "그리움": {
-        "keywords": [
-            "그리움", "향수", "추억", "그립", "옛날", "어릴적", "추상적", "몽환적",
-            "아련", "쓸쓸", "서정적", "감성적", "애틋", "생각나", "기억"
-        ],
-        "tags": ["#nostalgic", "#memory", "#longing", "#sentimental", "#wistful"],
-        "base_confidence": 0.6
-    }
-}
-
-# 🌍 상황별 감정 부스터
-CONTEXT_BOOSTERS = {
-    "계절": {
-        "봄": {"기쁨": 0.2, "활력": 0.15, "로맨틱": 0.1},
-        "여름": {"활력": 0.25, "자신감": 0.15, "기쁨": 0.1},
-        "가을": {"그리움": 0.2, "평온": 0.15, "로맨틱": 0.1},
-        "겨울": {"평온": 0.2, "그리움": 0.15, "로맨틱": 0.1}
-    },
-    "시간": {
-        "아침": {"활력": 0.2, "자신감": 0.15},
-        "낮": {"기쁨": 0.15, "활력": 0.1},
-        "저녁": {"로맨틱": 0.2, "평온": 0.15},
-        "밤": {"그리움": 0.2, "평온": 0.15, "로맨틱": 0.1}
-    },
-    "상황": {
-        "데이트": {"로맨틱": 0.3, "설렘": 0.2},
-        "업무": {"자신감": 0.2, "활력": 0.15},
-        "휴식": {"평온": 0.25, "기쁨": 0.1},
-        "외출": {"활력": 0.15, "자신감": 0.1}
-    }
-}
-
-# 🎨 향수 타입별 감정 매핑
-PERFUME_TYPE_EMOTIONS = {
-    "플로럴": ["로맨틱", "기쁨", "평온"],
-    "시트러스": ["활력", "기쁨", "자신감"],
-    "우디": ["자신감", "평온", "그리움"],
-    "바닐라": ["평온", "로맨틱", "그리움"],
-    "머스크": ["자신감", "로맨틱", "평온"],
-    "프루티": ["기쁨", "활력", "설렘"]
-}
+# 디렉토리 생성
+DATA_DIR.mkdir(exist_ok=True)
+DIARY_IMAGES_DIR.mkdir(exist_ok=True)
 
 
-def load_diary_data():
-    """시향 일기 데이터 로딩"""
-    if os.path.exists(DIARY_PATH):
-        try:
-            with open(DIARY_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            logger.info(f"✅ 시향 일기 데이터 로딩: {len(data)}개")
-            return data
-        except Exception as e:
-            logger.error(f"❌ 시향 일기 데이터 로딩 실패: {e}")
-    return []
+# ─── 데이터 모델 정의 ────────────────────────────────────────────────────────────
+class DiaryEntry(BaseModel):
+    """시향 일기 입력 모델"""
+    user_id: Optional[str] = Field(None, description="사용자 ID")
+    perfume_name: str = Field(..., min_length=1, max_length=100, description="향수 이름")
+    content: Optional[str] = Field(None, max_length=2000, description="일기 내용")
+    emotion_tags: Optional[List[str]] = Field(default=[], description="감정 태그")
+    is_public: bool = Field(default=False, description="공개 여부")
+    rating: Optional[float] = Field(None, ge=0, le=5, description="향수 평점")
+    mood: Optional[str] = Field(None, max_length=50, description="기분")
+    weather: Optional[str] = Field(None, max_length=50, description="날씨")
+    location: Optional[str] = Field(None, max_length=100, description="장소")
 
 
-def save_diary_data(data):
-    """시향 일기 데이터 저장"""
+class DiaryUpdateRequest(BaseModel):
+    """일기 수정 요청 모델"""
+    content: Optional[str] = Field(None, max_length=2000, description="수정할 내용")
+    emotion_tags: Optional[List[str]] = Field(None, description="수정할 감정 태그")
+    is_public: Optional[bool] = Field(None, description="공개 여부 변경")
+    rating: Optional[float] = Field(None, ge=0, le=5, description="향수 평점 수정")
+    mood: Optional[str] = Field(None, max_length=50, description="기분 수정")
+    weather: Optional[str] = Field(None, max_length=50, description="날씨 수정")
+    location: Optional[str] = Field(None, max_length=100, description="장소 수정")
+
+
+# ─── 데이터 파일 관리 함수들 ──────────────────────────────────────────────────────
+def load_diary_data() -> List[Dict]:
+    """일기 데이터 로드"""
     try:
-        os.makedirs(os.path.dirname(DIARY_PATH), exist_ok=True)
-        with open(DIARY_PATH, "w", encoding="utf-8") as f:
+        if DIARY_DATA_PATH.exists():
+            with open(DIARY_DATA_PATH, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return []
+    except Exception as e:
+        logger.error(f"❌ 일기 데이터 로드 실패: {e}")
+        return []
+
+
+def save_diary_data(data: List[Dict]) -> bool:
+    """일기 데이터 저장"""
+    try:
+        with open(DIARY_DATA_PATH, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        logger.info(f"✅ 시향 일기 데이터 저장: {len(data)}개")
+        return True
     except Exception as e:
-        logger.error(f"❌ 시향 일기 데이터 저장 실패: {e}")
+        logger.error(f"❌ 일기 데이터 저장 실패: {e}")
+        return False
 
 
-def get_default_user():
-    """기본 사용자 정보"""
-    return {
-        "uid": "anonymous",
-        "name": "익명 사용자",
-        "email": "anonymous@example.com",
-        "picture": ""
-    }
+def get_diary_by_id(diary_id: str) -> Optional[Dict]:
+    """특정 일기 조회"""
+    diary_data = load_diary_data()
+    return next((diary for diary in diary_data if diary.get("id") == diary_id), None)
 
 
-async def rule_based_emotion_analysis(content: str, perfume_name: str = "") -> dict:
-    """완전한 룰 기반 감정 분석"""
-    try:
-        if not content or not content.strip():
-            return {
-                "success": False,
-                "primary_emotion": "중립",
-                "confidence": 0.3,
-                "emotion_tags": ["#neutral"],
-                "analysis_method": "rule_based"
-            }
+def update_diary_by_id(diary_id: str, updated_data: Dict) -> bool:
+    """특정 일기 업데이트"""
+    diary_data = load_diary_data()
+    for i, diary in enumerate(diary_data):
+        if diary.get("id") == diary_id:
+            diary_data[i].update(updated_data)
+            diary_data[i]["updated_at"] = datetime.now().isoformat()
+            return save_diary_data(diary_data)
+    return False
 
-        text = f"{content} {perfume_name}".lower()
-        emotion_scores = {}
 
-        # 각 감정별로 점수 계산
-        for emotion, config in EMOTION_RULES.items():
-            score = config["base_confidence"]
-            keyword_matches = []
+def delete_diary_by_id(diary_id: str) -> bool:
+    """특정 일기 삭제"""
+    diary_data = load_diary_data()
+    original_count = len(diary_data)
+    diary_data = [diary for diary in diary_data if diary.get("id") != diary_id]
 
-            for keyword in config["keywords"]:
-                if keyword in text:
-                    keyword_matches.append(keyword)
-                    score += 0.1
+    if len(diary_data) < original_count:
+        return save_diary_data(diary_data)
+    return False
 
-            if keyword_matches:
-                emotion_scores[emotion] = {
-                    "confidence": min(score, 1.0),
-                    "matched_keywords": keyword_matches
-                }
 
-        # 감정이 감지되지 않으면 중립 반환
-        if not emotion_scores:
-            return {
-                "success": False,
-                "primary_emotion": "중립",
-                "confidence": 0.3,
-                "emotion_tags": ["#neutral"],
-                "analysis_method": "rule_based"
-            }
-
-        # 주요 감정 결정
-        primary_emotion = max(emotion_scores.keys(), key=lambda e: emotion_scores[e]["confidence"])
-        confidence = emotion_scores[primary_emotion]["confidence"]
-
-        # 감정 태그 생성 (상위 3개 감정)
-        top_emotions = sorted(emotion_scores.items(), key=lambda x: x[1]["confidence"], reverse=True)[:3]
-        emotion_tags = []
-        for emotion, data in top_emotions:
-            emotion_tags.extend(EMOTION_RULES[emotion]["tags"][:2])
-
-        # 상황 감지
-        context = {
-            "계절": None,
-            "시간": None,
-            "상황": None
-        }
-
-        # 계절 감지
-        season_keywords = {
-            "봄": ["봄", "spring", "꽃", "벚꽃", "새싹"],
-            "여름": ["여름", "summer", "더위", "바다", "시원"],
-            "가을": ["가을", "fall", "autumn", "단풍", "쌀쌀"],
-            "겨울": ["겨울", "winter", "눈", "추위", "따뜻"]
-        }
-
-        for season, keywords in season_keywords.items():
-            if any(keyword in text for keyword in keywords):
-                context["계절"] = season
-                break
-
-        # 향수 타입 감지
-        perfume_type = "기타"
-        type_keywords = {
-            "플로럴": ["꽃", "플로럴", "장미", "자스민", "라벤더"],
-            "시트러스": ["레몬", "오렌지", "자몽", "시트러스", "상큼"],
-            "우디": ["나무", "우디", "삼나무", "산달우드"],
-            "바닐라": ["바닐라", "달콤", "vanilla"],
-            "머스크": ["머스크", "musk", "관능"],
-            "프루티": ["과일", "프루티", "사과", "배", "복숭아"]
-        }
-
-        for ptype, keywords in type_keywords.items():
-            if any(keyword in text for keyword in keywords):
-                perfume_type = ptype
-                break
-
-        return {
-            "success": True,
-            "primary_emotion": primary_emotion,
-            "confidence": round(confidence, 3),
-            "emotion_tags": emotion_tags,
-            "analysis_method": "rule_based",
-            "emotion_scores": {k: round(v["confidence"], 3) for k, v in emotion_scores.items()},
-            "context_detected": context,
-            "perfume_type": perfume_type,
-            "matched_keywords_summary": {
-                emotion: data["matched_keywords"]
-                for emotion, data in emotion_scores.items()
-            }
-        }
-
-    except Exception as e:
-        logger.error(f"❌ 룰 기반 감정 분석 오류: {e}")
+# ─── 감정 분석 및 태그 처리 함수들 ────────────────────────────────────────────────
+async def process_emotion_analysis(content: str, perfume_name: str) -> Dict:
+    """감정 분석 처리"""
+    if not content or not content.strip():
         return {
             "success": False,
             "primary_emotion": "중립",
-            "confidence": 0.3,
+            "confidence": 0.0,
             "emotion_tags": ["#neutral"],
-            "analysis_method": "error_fallback",
-            "error": str(e)
+            "analysis_method": "no_content"
+        }
+
+    try:
+        # 룰 기반 감정 분석 (비동기)
+        analysis_result = await asyncio.wait_for(
+            rule_based_emotion_analysis(content, perfume_name),
+            timeout=10.0
+        )
+
+        if analysis_result and analysis_result.get("success"):
+            return analysis_result
+        else:
+            # 분석 실패 시 기본값 반환
+            return {
+                "success": False,
+                "primary_emotion": "중립",
+                "confidence": 0.3,
+                "emotion_tags": ["#neutral"],
+                "analysis_method": "fallback"
+            }
+
+    except asyncio.TimeoutError:
+        logger.warning("⏰ 감정 분석 시간 초과")
+        return {
+            "success": False,
+            "primary_emotion": "중립",
+            "confidence": 0.2,
+            "emotion_tags": ["#timeout"],
+            "analysis_method": "timeout"
+        }
+    except Exception as e:
+        logger.error(f"❌ 감정 분석 오류: {e}")
+        return {
+            "success": False,
+            "primary_emotion": "중립",
+            "confidence": 0.1,
+            "emotion_tags": ["#error"],
+            "analysis_method": "error"
         }
 
 
-# 전역 데이터 로딩
-diary_data = load_diary_data()
+def merge_emotion_tags(manual_tags: List[str], auto_tags: List[str]) -> List[str]:
+    """수동 태그와 자동 태그 병합"""
+    # 중복 제거 및 정리
+    all_tags = list(set(manual_tags + auto_tags))
+
+    # 빈 태그 제거 및 정리
+    cleaned_tags = []
+    for tag in all_tags:
+        if tag and tag.strip():
+            cleaned_tag = tag.strip()
+            if not cleaned_tag.startswith('#'):
+                cleaned_tag = f'#{cleaned_tag}'
+            cleaned_tags.append(cleaned_tag)
+
+    return cleaned_tags[:10]  # 최대 10개 태그로 제한
 
 
-# ================================
-# ✅ 기본 시향 일기 API (감정 태그 포함)
-# ================================
+# ─── 이미지 처리 함수들 ──────────────────────────────────────────────────────────
+async def process_diary_image(file: UploadFile, diary_id: str) -> Optional[str]:
+    """일기 이미지 처리"""
+    if not file:
+        return None
 
-@router.post("/", summary="📝 시향 일기 작성 (감정 태그 포함)")
-async def create_diary_entry(
-        entry: DiaryCreateRequest = Body(
-            ...,
-            example={
-                "user_id": "john_doe",
-                "perfume_name": "Chanel No.5",
-                "content": "오늘은 봄바람이 느껴지는 향수와 산책했어요.",
-                "is_public": False,
-                "emotion_tags": ["calm", "spring", "happy"]
-            }
-        )
+    try:
+        # 이미지 검증
+        if file.content_type not in ["image/jpeg", "image/png", "image/jpg"]:
+            raise HTTPException(status_code=400, detail="지원되지 않는 이미지 형식입니다.")
+
+        # 파일 크기 검증 (5MB 제한)
+        file_size = 0
+        file_content = await file.read()
+        file_size = len(file_content)
+
+        if file_size > 5 * 1024 * 1024:  # 5MB
+            raise HTTPException(status_code=400, detail="이미지 크기가 5MB를 초과합니다.")
+
+        # 이미지 저장
+        image_path = await save_uploaded_image(file_content, diary_id, file.filename)
+        return image_path
+
+    except Exception as e:
+        logger.error(f"❌ 이미지 처리 오류: {e}")
+        return None
+
+
+# ─── API 엔드포인트들 ────────────────────────────────────────────────────────────
+
+@router.post("/", summary="시향 일기 작성")
+async def create_diary(
+        entry: DiaryEntry,
+        user=Depends(verify_firebase_token_optional)
 ):
     """
-    ✅ 시향 일기 작성 (텍스트 + 감정 태그)
+    시향 일기 작성
 
-    **감정 태그 기능:**
-    - 사용자가 직접 입력한 감정 태그
-    - AI가 자동으로 분석한 감정 태그
-    - 두 가지가 자동으로 병합되어 저장됨
-
-    **지원되는 감정:**
-    - 기쁨, 설렘, 평온, 자신감, 활력, 로맨틱, 그리움
-
-    **자동 분석 기능:**
-    - 내용 기반 감정 분석
-    - 상황/계절 감지
-    - 향수 타입 추천
+    - 감정 분석 자동 실행
+    - 감정 태그 자동 생성 및 병합
+    - 사용자 인증 선택적 적용
     """
     try:
-        user = get_default_user()
-        user_id = entry.user_id if entry.user_id else "anonymous_user"
+        # 사용자 정보 처리
+        if not user:
+            user = get_default_user()
 
+        user_id = entry.user_id or user.get("uid", "anonymous_user")
+
+        # 일기 내용 검증 및 정리
+        content = sanitize_content(entry.content) if entry.content else ""
+
+        # 기본 일기 데이터 생성
         now = datetime.now().isoformat()
         diary_id = str(uuid.uuid4())
 
-        logger.info(f"📝 새 일기 작성 (감정 태그 포함): {user_id} - {entry.perfume_name}")
-        logger.info(f"👤 사용자 감정 태그: {entry.emotion_tags}")
+        logger.info(f"📝 새 일기 작성: {user_id} - {entry.perfume_name}")
 
-        # 룰 기반 감정 분석
-        initial_analysis = None
-        if entry.content and entry.content.strip():
-            try:
-                initial_analysis = await asyncio.wait_for(
-                    rule_based_emotion_analysis(entry.content, entry.perfume_name),
-                    timeout=5.0
-                )
-                logger.info(
-                    f"🎯 감정 분석 결과: {initial_analysis.get('primary_emotion')} ({initial_analysis.get('confidence')})")
-            except Exception as e:
-                logger.error(f"❌ 감정 분석 오류: {e}")
-                initial_analysis = {
-                    "success": False,
-                    "primary_emotion": "중립",
-                    "confidence": 0.3,
-                    "emotion_tags": ["#neutral"],
-                    "analysis_method": "error"
-                }
+        # 감정 분석 실행
+        emotion_analysis = await process_emotion_analysis(content, entry.perfume_name)
 
-        # 일기 데이터 생성
+        # 감정 태그 병합
+        manual_tags = entry.emotion_tags or []
+        auto_tags = emotion_analysis.get("emotion_tags", [])
+        merged_tags = merge_emotion_tags(manual_tags, auto_tags)
+
+        # 일기 데이터 구성
         diary = {
             "id": diary_id,
             "user_id": user_id,
-            "user_name": user_id,
+            "user_name": user.get("name", user_id),
             "user_profile_image": user.get("picture", ""),
             "perfume_id": f"perfume_{entry.perfume_name.lower().replace(' ', '_')}",
             "perfume_name": entry.perfume_name,
             "brand": "Unknown Brand",
-            "content": entry.content or "",
-            "tags": entry.emotion_tags or [],  # 🎯 사용자 입력 태그
+            "content": content,
+            "emotion_tags": merged_tags,
+            "rating": entry.rating,
+            "mood": entry.mood,
+            "weather": entry.weather,
+            "location": entry.location,
             "likes": 0,
             "comments": 0,
             "is_public": entry.is_public,
             "created_at": now,
             "updated_at": now,
+            "image_path": None,  # 이미지 업로드는 별도 엔드포인트에서 처리
 
-            # 🆕 이미지 관련 필드들 (기본값)
-            "image_url": None,
-            "thumbnail_url": None,
-            "image_filename": None,
-            "image_metadata": {},
-
-            # 🎯 감정 분석 정보
-            "emotion_analysis": initial_analysis,
-            "primary_emotion": initial_analysis.get("primary_emotion", "중립") if initial_analysis else "중립",
-            "emotion_confidence": initial_analysis.get("confidence", 0.0) if initial_analysis else 0.0,
-            "emotion_tags_auto": initial_analysis.get("emotion_tags", []) if initial_analysis else [],
-            "emotion_analysis_status": "completed" if initial_analysis and initial_analysis.get(
-                "success") else "failed",
-            "analysis_method": "rule_based"
+            # 감정 분석 결과
+            "emotion_analysis": emotion_analysis,
+            "primary_emotion": emotion_analysis.get("primary_emotion", "중립"),
+            "emotion_confidence": emotion_analysis.get("confidence", 0.0),
+            "emotion_tags_auto": auto_tags,
+            "emotion_analysis_status": "completed" if emotion_analysis.get("success") else "failed",
+            "analysis_method": emotion_analysis.get("analysis_method", "unknown")
         }
 
-        # 🎯 태그 병합 (사용자 입력 태그 + 자동 분석 태그)
-        user_tags = entry.emotion_tags or []
-        auto_tags = initial_analysis.get("emotion_tags", []) if initial_analysis else []
-
-        # 중복 제거하여 병합
-        merged_tags = list(set(user_tags + auto_tags))
-        diary["tags"] = merged_tags
-
-        logger.info(f"🏷️ 최종 태그: {merged_tags}")
-
-        # 저장
+        # 데이터 저장
+        diary_data = load_diary_data()
         diary_data.append(diary)
-        save_diary_data(diary_data)
 
-        return JSONResponse(
-            status_code=200,
-            content={
-                "message": "✅ 시향 일기가 성공적으로 저장되었습니다.",
-                "diary_id": diary_id,
-                "user_id": user_id,
-                "has_image": False,
-                "emotion_analysis": {
-                    "status": diary["emotion_analysis_status"],
-                    "method": "rule_based",
-                    "primary_emotion": diary["primary_emotion"],
-                    "confidence": diary["emotion_confidence"],
-                    "user_emotion_tags": user_tags,
-                    "auto_emotion_tags": auto_tags,
-                    "merged_tags": merged_tags,
-                    "context_detected": initial_analysis.get("context_detected", {}) if initial_analysis else {},
-                    "perfume_type": initial_analysis.get("perfume_type", "기타") if initial_analysis else "기타"
+        if save_diary_data(diary_data):
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "message": "시향 일기가 성공적으로 저장되었습니다.",
+                    "diary_id": diary_id,
+                    "user_id": user_id,
+                    "emotion_analysis": {
+                        "status": diary["emotion_analysis_status"],
+                        "method": diary["analysis_method"],
+                        "primary_emotion": diary["primary_emotion"],
+                        "confidence": diary["emotion_confidence"],
+                        "merged_tags": merged_tags,
+                        "auto_tags_count": len(auto_tags),
+                        "manual_tags_count": len(manual_tags)
+                    }
                 }
-            }
-        )
+            )
+        else:
+            raise HTTPException(status_code=500, detail="일기 저장에 실패했습니다.")
 
     except Exception as e:
         logger.error(f"❌ 일기 저장 오류: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"message": f"일기 저장 중 오류: {str(e)}"}
-        )
+        raise HTTPException(status_code=500, detail=f"일기 저장 중 오류: {str(e)}")
 
 
-# ================================
-# 🆕 이미지 업로드 관련 API들
-# ================================
-
-@router.post("/upload-image", summary="📸 이미지만 업로드")
-async def upload_diary_image(
-        request: Request,
-        user_id: str = Form(..., description="사용자 ID"),
-        image: UploadFile = File(..., description="업로드할 이미지 파일")
-):
-    """
-    이미지 파일만 업로드하는 API
-
-    - JPG, PNG, WEBP 지원
-    - 최대 10MB
-    - 자동 리사이징 및 썸네일 생성
-    """
-    try:
-        # 이미지 파일 검증
-        is_valid, message = validate_image_file(image)
-        if not is_valid:
-            return ImageUploadResponse(
-                success=False,
-                message=message,
-                image_url=None,
-                thumbnail_url=None,
-                filename=None
-            )
-
-        # 이미지 저장 및 처리
-        success, result, metadata = await save_uploaded_image(image, user_id)
-
-        if not success:
-            return ImageUploadResponse(
-                success=False,
-                message=result,
-                image_url=None,
-                thumbnail_url=None,
-                filename=None
-            )
-
-        # URL 생성
-        base_url = str(request.base_url)
-        image_url = get_image_url(result, base_url)
-        thumbnail_url = get_thumbnail_url(result, base_url)
-
-        return ImageUploadResponse(
-            success=True,
-            message="이미지 업로드 성공",
-            image_url=image_url,
-            thumbnail_url=thumbnail_url,
-            filename=result,
-            file_size=metadata.get("file_size") if metadata else None,
-            image_metadata=metadata
-        )
-
-    except Exception as e:
-        logger.error(f"❌ 이미지 업로드 오류: {e}")
-        return ImageUploadResponse(
-            success=False,
-            message=f"이미지 업로드 중 오류: {str(e)}",
-            image_url=None,
-            thumbnail_url=None,
-            filename=None
-        )
-
-
-@router.post("/with-image", summary="📝📸 일기 + 이미지 동시 작성 (감정 태그 포함)")
-async def create_diary_with_image(
-        request: Request,
-        user_id: str = Form(..., description="사용자 ID"),
-        perfume_name: str = Form(..., description="향수명"),
-        content: str = Form(None, description="일기 내용"),
-        is_public: bool = Form(..., description="공개 여부"),
-        emotion_tags: str = Form("[]", description="감정 태그 (JSON 배열 문자열)"),
-        image: UploadFile = File(..., description="첨부할 이미지")
-):
-    """
-    ✅ 시향 일기 + 이미지 + 감정 태그 모든 기능 통합 API
-
-    **주요 기능:**
-    - 텍스트 일기 작성
-    - 이미지 업로드 및 처리
-    - 사용자 감정 태그 입력
-    - AI 자동 감정 분석
-    - 태그 자동 병합
-
-    **감정 태그 사용법:**
-    - emotion_tags: ["happy", "spring", "romantic"] 형태로 전송
-    - 사용자 태그 + AI 분석 태그가 자동 병합됨
-    """
-    try:
-        # 1. emotion_tags JSON 파싱
-        try:
-            import json as py_json
-            parsed_tags = py_json.loads(emotion_tags) if emotion_tags else []
-            logger.info(f"🏷️ 사용자 감정 태그: {parsed_tags}")
-        except:
-            parsed_tags = []
-            logger.warning("⚠️ 감정 태그 파싱 실패, 빈 배열로 처리")
-
-        logger.info(f"📝📸 일기+이미지+감정태그 작성: {user_id} - {perfume_name}")
-
-        # 2. 이미지 업로드 처리
-        image_url = None
-        thumbnail_url = None
-        image_filename = None
-        image_metadata = {}
-
-        if image:
-            is_valid, validation_message = validate_image_file(image)
-            if is_valid:
-                success, result, metadata = await save_uploaded_image(image, user_id)
-                if success:
-                    base_url = str(request.base_url)
-                    image_url = get_image_url(result, base_url)
-                    thumbnail_url = get_thumbnail_url(result, base_url)
-                    image_filename = result
-                    image_metadata = metadata or {}
-                    logger.info(f"✅ 이미지 저장 성공: {result}")
-                else:
-                    logger.warning(f"⚠️ 이미지 저장 실패: {result}")
-            else:
-                logger.warning(f"⚠️ 이미지 검증 실패: {validation_message}")
-
-        # 3. 시향 일기 작성
-        user = get_default_user()
-        now = datetime.now().isoformat()
-        diary_id = str(uuid.uuid4())
-
-        # 4. 룰 기반 감정 분석
-        initial_analysis = None
-        if content and content.strip():
-            try:
-                initial_analysis = await asyncio.wait_for(
-                    rule_based_emotion_analysis(content, perfume_name),
-                    timeout=5.0
-                )
-                logger.info(f"🎯 감정 분석 결과: {initial_analysis.get('primary_emotion')}")
-            except Exception as e:
-                logger.error(f"❌ 감정 분석 오류: {e}")
-                initial_analysis = {
-                    "success": False,
-                    "primary_emotion": "중립",
-                    "confidence": 0.3,
-                    "emotion_tags": ["#neutral"],
-                    "analysis_method": "error"
-                }
-
-        # 5. 일기 데이터 생성 (이미지 + 감정 태그 포함)
-        diary = {
-            "id": diary_id,
-            "user_id": user_id,
-            "user_name": user_id,
-            "user_profile_image": user.get("picture", ""),
-            "perfume_id": f"perfume_{perfume_name.lower().replace(' ', '_')}",
-            "perfume_name": perfume_name,
-            "brand": "Unknown Brand",
-            "content": content or "",
-            "tags": parsed_tags or [],  # 🎯 사용자 입력 태그
-            "likes": 0,
-            "comments": 0,
-            "is_public": is_public,
-            "created_at": now,
-            "updated_at": now,
-
-            # 🆕 이미지 관련 필드들
-            "image_url": image_url,
-            "thumbnail_url": thumbnail_url,
-            "image_filename": image_filename,
-            "image_metadata": image_metadata,
-
-            # 🎯 감정 분석 정보
-            "emotion_analysis": initial_analysis,
-            "primary_emotion": initial_analysis.get("primary_emotion", "중립") if initial_analysis else "중립",
-            "emotion_confidence": initial_analysis.get("confidence", 0.0) if initial_analysis else 0.0,
-            "emotion_tags_auto": initial_analysis.get("emotion_tags", []) if initial_analysis else [],
-            "emotion_analysis_status": "completed" if initial_analysis and initial_analysis.get(
-                "success") else "failed",
-            "analysis_method": "rule_based"
-        }
-
-        # 🎯 태그 병합 (사용자 입력 태그 + 자동 분석 태그)
-        user_tags = parsed_tags or []
-        auto_tags = initial_analysis.get("emotion_tags", []) if initial_analysis else []
-        merged_tags = list(set(user_tags + auto_tags))
-        diary["tags"] = merged_tags
-
-        logger.info(f"🏷️ 최종 병합 태그: {merged_tags}")
-
-        # 6. 저장
-        diary_data.append(diary)
-        save_diary_data(diary_data)
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "message": "✅ 시향 일기 + 이미지 + 감정 태그 저장 성공",
-                "diary_id": diary_id,
-                "user_id": user_id,
-                "image_uploaded": image_url is not None,
-                "image_url": image_url,
-                "thumbnail_url": thumbnail_url,
-                "emotion_analysis": {
-                    "status": diary["emotion_analysis_status"],
-                    "method": "rule_based",
-                    "primary_emotion": diary["primary_emotion"],
-                    "confidence": diary["emotion_confidence"],
-                    "user_emotion_tags": user_tags,
-                    "auto_emotion_tags": auto_tags,
-                    "merged_tags": merged_tags
-                }
-            }
-        )
-
-    except Exception as e:
-        logger.error(f"❌ 일기+이미지+태그 저장 오류: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"message": f"저장 중 오류: {str(e)}"}
-        )
-
-
-# ================================
-# ✅ 조회 API들 (감정 태그 필터 포함)
-# ================================
-
-@router.get("/", summary="📋 시향 일기 목록 조회 (감정 태그 필터 포함)")
+@router.get("/", summary="시향 일기 목록 조회")
 async def get_diary_list(
         public: Optional[bool] = Query(None, description="공개 여부 필터"),
         page: Optional[int] = Query(1, description="페이지 번호"),
         size: Optional[int] = Query(10, description="페이지 크기"),
-        keyword: Optional[str] = Query(None, description="검색 키워드"),
-        has_image: Optional[bool] = Query(None, description="이미지 포함 여부 필터"),
-        emotion: Optional[str] = Query(None, description="감정 필터 (기쁨, 설렘, 평온, 자신감, 활력, 로맨틱, 그리움)"),
-        emotion_tag: Optional[str] = Query(None, description="감정 태그 필터 (예: happy, calm, romantic)")
+        user_id: Optional[str] = Query(None, description="사용자 ID 필터"),
+        emotion: Optional[str] = Query(None, description="감정 필터"),
+        sort: Optional[str] = Query("created_at", description="정렬 기준 (created_at, likes, rating)")
 ):
     """
-    ✅ 시향 일기 목록 조회 (모든 필터 지원)
+    시향 일기 목록 조회
 
-    **필터 옵션:**
-    - public: 공개/비공개 필터
-    - has_image: 이미지 포함 여부
-    - emotion: 주요 감정 필터
-    - emotion_tag: 특정 감정 태그 필터
-    - keyword: 내용/향수명 검색
-
-    **감정 태그 예시:**
-    - happy, calm, romantic, energetic, confident 등
+    - 필터링 및 페이징 지원
+    - 감정별 필터링 지원
+    - 다양한 정렬 옵션
     """
     try:
-        filtered_data = diary_data.copy()
+        diary_data = load_diary_data()
 
-        # 1. 공개 여부 필터
+        # 필터링
+        filtered_data = diary_data
+
         if public is not None:
             filtered_data = [d for d in filtered_data if d.get("is_public") == public]
 
-        # 2. 키워드 검색
-        if keyword:
-            filtered_data = [d for d in filtered_data
-                             if keyword.lower() in d.get("content", "").lower()
-                             or keyword.lower() in d.get("perfume_name", "").lower()]
+        if user_id:
+            filtered_data = [d for d in filtered_data if d.get("user_id") == user_id]
 
-        # 3. 이미지 포함 여부 필터
-        if has_image is not None:
-            if has_image:
-                filtered_data = [d for d in filtered_data if d.get("image_url")]
-            else:
-                filtered_data = [d for d in filtered_data if not d.get("image_url")]
-
-        # 4. 🎯 감정 필터
         if emotion:
             filtered_data = [d for d in filtered_data
-                             if d.get("primary_emotion", "").lower() == emotion.lower()]
-            logger.info(f"🎯 감정 필터 적용: {emotion} -> {len(filtered_data)}개")
+                             if emotion.lower() in d.get("primary_emotion", "").lower() or
+                             any(emotion.lower() in tag.lower() for tag in d.get("emotion_tags", []))]
 
-        # 5. 🏷️ 감정 태그 필터
-        if emotion_tag:
-            filtered_data = [d for d in filtered_data
-                             if any(emotion_tag.lower() in tag.lower() for tag in d.get("tags", []))]
-            logger.info(f"🏷️ 감정 태그 필터 적용: {emotion_tag} -> {len(filtered_data)}개")
+        # 정렬
+        if sort == "likes":
+            filtered_data.sort(key=lambda x: x.get("likes", 0), reverse=True)
+        elif sort == "rating":
+            filtered_data.sort(key=lambda x: x.get("rating", 0) or 0, reverse=True)
+        else:  # created_at (기본값)
+            filtered_data.sort(key=lambda x: x.get("created_at", ""), reverse=True)
 
-        # 정렬 및 페이징
-        filtered_data.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-        start = (page - 1) * size
-        end = start + size
-        paginated_data = filtered_data[start:end]
+        # 페이징
+        total_count = len(filtered_data)
+        start_idx = (page - 1) * size
+        end_idx = start_idx + size
+        paginated_data = filtered_data[start_idx:end_idx]
 
-        # 응답 데이터 변환 (감정 태그 정보 포함)
+        # 응답 데이터 구성
         response_data = []
-        for item in paginated_data:
+        for diary in paginated_data:
             response_data.append({
-                "id": item.get("id", ""),
-                "user_name": item.get("user_name", "익명"),
-                "perfume_name": item.get("perfume_name", ""),
-                "content": item.get("content", ""),
-                "tags": item.get("tags", []),  # 🎯 병합된 태그들
-                "primary_emotion": item.get("primary_emotion", "중립"),
-                "emotion_confidence": item.get("emotion_confidence", 0.0),
-                "emotion_tags_auto": item.get("emotion_tags_auto", []),  # 🎯 자동 분석 태그
-                "analysis_method": item.get("analysis_method", "rule_based"),
-                "likes": item.get("likes", 0),
-                "created_at": item.get("created_at", ""),
-                # 이미지 관련 정보
-                "image_url": item.get("image_url"),
-                "thumbnail_url": item.get("thumbnail_url"),
-                "has_image": bool(item.get("image_url"))
+                "id": diary.get("id"),
+                "user_id": diary.get("user_id"),
+                "user_name": diary.get("user_name"),
+                "perfume_name": diary.get("perfume_name"),
+                "content": diary.get("content", "")[:100] + "..." if len(diary.get("content", "")) > 100 else diary.get(
+                    "content", ""),
+                "emotion_tags": diary.get("emotion_tags", []),
+                "primary_emotion": diary.get("primary_emotion"),
+                "rating": diary.get("rating"),
+                "mood": diary.get("mood"),
+                "weather": diary.get("weather"),
+                "location": diary.get("location"),
+                "likes": diary.get("likes", 0),
+                "comments": diary.get("comments", 0),
+                "is_public": diary.get("is_public", False),
+                "created_at": diary.get("created_at"),
+                "image_path": diary.get("image_path")
             })
 
-        return BaseResponse(
-            message=f"✅ 시향 일기 목록 조회 성공 (총 {len(filtered_data)}개)",
-            result={
-                "diaries": response_data,
-                "total_count": len(filtered_data),
+        return {
+            "message": "일기 목록 조회 성공",
+            "data": response_data,
+            "pagination": {
                 "page": page,
                 "size": size,
-                "has_next": end < len(filtered_data),
-                "filters_applied": {
-                    "public": public,
-                    "has_image": has_image,
-                    "emotion": emotion,
-                    "emotion_tag": emotion_tag,
-                    "keyword": keyword
-                },
-                "emotion_tag_support": True,  # 🎯 감정 태그 지원 여부
-                "image_support": True
+                "total": total_count,
+                "total_pages": (total_count + size - 1) // size,
+                "has_next": end_idx < total_count,
+                "has_prev": page > 1
+            },
+            "filters": {
+                "public": public,
+                "user_id": user_id,
+                "emotion": emotion,
+                "sort": sort
             }
-        )
+        }
 
     except Exception as e:
         logger.error(f"❌ 일기 목록 조회 오류: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"message": f"서버 오류: {str(e)}"}
-        )
+        raise HTTPException(status_code=500, detail=f"일기 목록 조회 중 오류: {str(e)}")
 
 
-# ================================
-# 🆕 기타 이미지 관련 API들
-# ================================
-
-@router.delete("/images/{filename}", summary="🗑️ 이미지 삭제")
-async def delete_diary_image(filename: str, user_id: str = Query(..., description="사용자 ID")):
-    """업로드된 이미지 파일 삭제"""
-    try:
-        # 권한 확인 및 파일 삭제
-        success = delete_image_files(filename)
-
-        if success:
-            # 일기 데이터에서도 이미지 정보 제거
-            for diary in diary_data:
-                if diary.get("image_filename") == filename and diary.get("user_id") == user_id:
-                    diary["image_url"] = None
-                    diary["thumbnail_url"] = None
-                    diary["image_filename"] = None
-                    diary["updated_at"] = datetime.now().isoformat()
-                    break
-
-            save_diary_data(diary_data)
-
-        return ImageDeleteResponse(
-            success=success,
-            message="이미지 삭제 완료" if success else "이미지 삭제 실패",
-            deleted_files=[filename, f"thumb_{filename}"] if success else []
-        )
-
-    except Exception as e:
-        logger.error(f"❌ 이미지 삭제 오류: {e}")
-        return ImageDeleteResponse(
-            success=False,
-            message=f"이미지 삭제 중 오류: {str(e)}",
-            deleted_files=[]
-        )
-
-
-@router.get("/images/stats", summary="📊 이미지 업로드 통계")
-async def get_image_upload_stats():
-    """업로드된 이미지들의 통계 정보 조회"""
-    try:
-        stats = get_upload_stats()
-        return ImageStatsResponse(
-            total_images=stats.get("total_files", 0),
-            total_size_mb=stats.get("total_size_mb", 0.0),
-            upload_dir=stats.get("upload_dir", "")
-        )
-    except Exception as e:
-        logger.error(f"❌ 이미지 통계 조회 오류: {e}")
-        return ImageStatsResponse(
-            total_images=0,
-            total_size_mb=0.0,
-            upload_dir="error"
-        )
-
-
-# ================================
-# 🎯 감정 태그 관련 유틸리티 API들
-# ================================
-
-@router.get("/emotion-tags/available", summary="🏷️ 사용 가능한 감정 태그 목록")
-async def get_available_emotion_tags():
+@router.post("/{diary_id}/image", summary="일기 이미지 업로드")
+async def upload_diary_image(
+        diary_id: str,
+        file: UploadFile = File(...),
+        user=Depends(verify_firebase_token_optional)
+):
     """
-    사용 가능한 모든 감정 태그 목록 조회
+    일기 이미지 업로드
 
-    프론트엔드에서 감정 태그 선택 UI를 만들 때 사용
+    - 이미지 검증 및 크기 제한
+    - 기존 이미지 자동 삭제
+    - 다양한 이미지 형식 지원
     """
     try:
-        available_emotions = {}
-        for emotion, config in EMOTION_RULES.items():
-            available_emotions[emotion] = {
-                "korean_name": emotion,
-                "tags": config["tags"],
-                "keywords_sample": config["keywords"][:5]  # 샘플 키워드 5개
+        # 일기 존재 확인
+        diary = get_diary_by_id(diary_id)
+        if not diary:
+            raise HTTPException(status_code=404, detail="일기를 찾을 수 없습니다.")
+
+        # 권한 확인 (작성자만 수정 가능)
+        if user and diary.get("user_id") != user.get("uid"):
+            raise HTTPException(status_code=403, detail="이 일기를 수정할 권한이 없습니다.")
+
+        # 기존 이미지 삭제
+        if diary.get("image_path"):
+            await delete_uploaded_image(diary.get("image_path"))
+
+        # 새 이미지 저장
+        image_path = await process_diary_image(file, diary_id)
+
+        if image_path:
+            # 일기 데이터 업데이트
+            update_data = {"image_path": image_path}
+            if update_diary_by_id(diary_id, update_data):
+                return {
+                    "message": "이미지가 성공적으로 업로드되었습니다.",
+                    "diary_id": diary_id,
+                    "image_path": image_path
+                }
+            else:
+                raise HTTPException(status_code=500, detail="일기 업데이트에 실패했습니다.")
+        else:
+            raise HTTPException(status_code=500, detail="이미지 업로드에 실패했습니다.")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 이미지 업로드 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"이미지 업로드 중 오류: {str(e)}")
+
+
+@router.put("/{diary_id}", summary="일기 수정")
+async def update_diary(
+        diary_id: str,
+        update_data: DiaryUpdateRequest,
+        user=Depends(verify_firebase_token_optional)
+):
+    """
+    일기 수정
+
+    - 부분 수정 지원
+    - 감정 태그 재분석 옵션
+    - 권한 확인
+    """
+    try:
+        # 일기 존재 확인
+        diary = get_diary_by_id(diary_id)
+        if not diary:
+            raise HTTPException(status_code=404, detail="일기를 찾을 수 없습니다.")
+
+        # 권한 확인
+        if user and diary.get("user_id") != user.get("uid"):
+            raise HTTPException(status_code=403, detail="이 일기를 수정할 권한이 없습니다.")
+
+        # 업데이트할 데이터 준비
+        updated_fields = {}
+
+        # 내용 업데이트 시 감정 재분석
+        if update_data.content is not None:
+            updated_fields["content"] = sanitize_content(update_data.content)
+
+            # 감정 재분석 실행
+            emotion_analysis = await process_emotion_analysis(
+                updated_fields["content"],
+                diary.get("perfume_name", "")
+            )
+
+            # 감정 분석 결과 업데이트
+            updated_fields.update({
+                "emotion_analysis": emotion_analysis,
+                "primary_emotion": emotion_analysis.get("primary_emotion", "중립"),
+                "emotion_confidence": emotion_analysis.get("confidence", 0.0),
+                "emotion_tags_auto": emotion_analysis.get("emotion_tags", []),
+                "emotion_analysis_status": "completed" if emotion_analysis.get("success") else "failed",
+                "analysis_method": emotion_analysis.get("analysis_method", "unknown")
+            })
+
+        # 기타 필드 업데이트
+        if update_data.emotion_tags is not None:
+            # 기존 자동 태그와 새 수동 태그 병합
+            auto_tags = diary.get("emotion_tags_auto", [])
+            manual_tags = update_data.emotion_tags
+            updated_fields["emotion_tags"] = merge_emotion_tags(manual_tags, auto_tags)
+
+        if update_data.is_public is not None:
+            updated_fields["is_public"] = update_data.is_public
+
+        if update_data.rating is not None:
+            updated_fields["rating"] = update_data.rating
+
+        if update_data.mood is not None:
+            updated_fields["mood"] = update_data.mood
+
+        if update_data.weather is not None:
+            updated_fields["weather"] = update_data.weather
+
+        if update_data.location is not None:
+            updated_fields["location"] = update_data.location
+
+        # 업데이트 실행
+        if update_diary_by_id(diary_id, updated_fields):
+            return {
+                "message": "일기가 성공적으로 수정되었습니다.",
+                "diary_id": diary_id,
+                "updated_fields": list(updated_fields.keys()),
+                "emotion_reanalyzed": "content" in updated_fields
             }
+        else:
+            raise HTTPException(status_code=500, detail="일기 수정에 실패했습니다.")
 
-        return JSONResponse(
-            status_code=200,
-            content={
-                "message": "사용 가능한 감정 태그 목록",
-                "emotions": available_emotions,
-                "total_emotions": len(available_emotions),
-                "usage_info": {
-                    "user_input": "사용자가 직접 선택 가능",
-                    "auto_analysis": "AI가 내용 분석 후 자동 추가",
-                    "merge_policy": "사용자 태그 + AI 태그 자동 병합"
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 일기 수정 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"일기 수정 중 오류: {str(e)}")
+
+
+@router.delete("/{diary_id}", summary="일기 삭제")
+async def delete_diary(
+        diary_id: str,
+        user=Depends(verify_firebase_token_optional)
+):
+    """
+    일기 삭제
+
+    - 권한 확인
+    - 관련 이미지 자동 삭제
+    - 안전한 삭제 처리
+    """
+    try:
+        # 일기 존재 확인
+        diary = get_diary_by_id(diary_id)
+        if not diary:
+            raise HTTPException(status_code=404, detail="일기를 찾을 수 없습니다.")
+
+        # 권한 확인
+        if user and diary.get("user_id") != user.get("uid"):
+            raise HTTPException(status_code=403, detail="이 일기를 삭제할 권한이 없습니다.")
+
+        # 관련 이미지 삭제
+        if diary.get("image_path"):
+            try:
+                await delete_uploaded_image(diary.get("image_path"))
+                logger.info(f"✅ 일기 이미지 삭제 완료: {diary.get('image_path')}")
+            except Exception as e:
+                logger.warning(f"⚠️ 일기 이미지 삭제 실패: {e}")
+
+        # 일기 데이터 삭제
+        if delete_diary_by_id(diary_id):
+            return {
+                "message": "일기가 성공적으로 삭제되었습니다.",
+                "diary_id": diary_id,
+                "user_id": diary.get("user_id"),
+                "deleted_items": {
+                    "diary": True,
+                    "image": diary.get("image_path") is not None
                 }
             }
-        )
+        else:
+            raise HTTPException(status_code=500, detail="일기 삭제에 실패했습니다.")
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"❌ 감정 태그 목록 조회 오류: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"message": f"감정 태그 목록 조회 실패: {str(e)}"}
-        )
+        logger.error(f"❌ 일기 삭제 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"일기 삭제 중 오류: {str(e)}")
 
 
-@router.get("/emotion-tags/stats", summary="📊 감정 태그 사용 통계")
-async def get_emotion_tag_stats():
+@router.delete("/user/{user_id}", summary="사용자 모든 일기 삭제")
+async def delete_user_diaries(
+        user_id: str,
+        user=Depends(verify_firebase_token_optional)
+):
     """
-    전체 일기에서 감정 태그 사용 통계 조회
+    특정 사용자의 모든 일기 삭제
 
-    어떤 감정 태그가 가장 많이 사용되는지 분석
+    - 관리자 권한 또는 본인만 가능
+    - 모든 관련 이미지 자동 삭제
+    - 일괄 삭제 처리
     """
     try:
-        # 모든 태그 수집
-        all_tags = []
-        emotion_counts = {}
+        # 권한 확인 (본인 또는 관리자)
+        if user:
+            current_user_id = user.get("uid")
+            is_admin = user.get("email", "").endswith("@admin.whiff.com")  # 관리자 권한 확인
+
+            if current_user_id != user_id and not is_admin:
+                raise HTTPException(status_code=403, detail="이 작업을 수행할 권한이 없습니다.")
+
+        # 사용자 일기 목록 조회
+        diary_data = load_diary_data()
+        user_diaries = [diary for diary in diary_data if diary.get("user_id") == user_id]
+
+        if not user_diaries:
+            return {
+                "message": "삭제할 일기가 없습니다.",
+                "user_id": user_id,
+                "deleted_count": 0
+            }
+
+        # 관련 이미지 삭제
+        deleted_images = 0
+        for diary in user_diaries:
+            if diary.get("image_path"):
+                try:
+                    await delete_uploaded_image(diary.get("image_path"))
+                    deleted_images += 1
+                except Exception as e:
+                    logger.warning(f"⚠️ 이미지 삭제 실패: {e}")
+
+        # 일기 데이터 삭제
+        original_count = len(diary_data)
+        filtered_data = [diary for diary in diary_data if diary.get("user_id") != user_id]
+        deleted_count = original_count - len(filtered_data)
+
+        if save_diary_data(filtered_data):
+            return {
+                "message": f"사용자 {user_id}의 모든 일기가 삭제되었습니다.",
+                "user_id": user_id,
+                "deleted_count": deleted_count,
+                "deleted_images": deleted_images
+            }
+        else:
+            raise HTTPException(status_code=500, detail="일기 삭제에 실패했습니다.")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 사용자 일기 삭제 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"사용자 일기 삭제 중 오류: {str(e)}")
+
+
+@router.get("/stats/summary", summary="일기 통계 요약")
+async def get_diary_stats_summary(
+        user_id: Optional[str] = Query(None, description="특정 사용자 통계"),
+        user=Depends(verify_firebase_token_optional)
+):
+    """
+    일기 통계 요약 정보
+
+    - 전체 통계 또는 사용자별 통계
+    - 감정 분포, 평점 평균, 작성 빈도 등
+    - 월별/주별 통계 제공
+    """
+    try:
+        diary_data = load_diary_data()
+
+        # 사용자 필터링
+        if user_id:
+            diary_data = [d for d in diary_data if d.get("user_id") == user_id]
+
+        if not diary_data:
+            return {
+                "message": "통계 데이터가 없습니다.",
+                "user_id": user_id,
+                "stats": {
+                    "total_diaries": 0,
+                    "emotion_distribution": {},
+                    "average_rating": 0,
+                    "public_ratio": 0
+                }
+            }
+
+        # 기본 통계
+        total_diaries = len(diary_data)
+        public_diaries = len([d for d in diary_data if d.get("is_public", False)])
+
+        # 감정 분포 계산
+        emotion_count = {}
+        for diary in diary_data:
+            emotion = diary.get("primary_emotion", "중립")
+            emotion_count[emotion] = emotion_count.get(emotion, 0) + 1
+
+        # 평점 통계
+        ratings = [d.get("rating") for d in diary_data if d.get("rating") is not None]
+        average_rating = sum(ratings) / len(ratings) if ratings else 0
+
+        # 태그 분포 (상위 10개)
+        tag_count = {}
+        for diary in diary_data:
+            for tag in diary.get("emotion_tags", []):
+                tag_count[tag] = tag_count.get(tag, 0) + 1
+
+        popular_tags = sorted(tag_count.items(), key=lambda x: x[1], reverse=True)[:10]
+
+        # 월별 작성 통계 (최근 12개월)
+        from collections import defaultdict
+        monthly_stats = defaultdict(int)
 
         for diary in diary_data:
-            # 사용자 태그
-            tags = diary.get("tags", [])
-            all_tags.extend(tags)
+            created_at = diary.get("created_at", "")
+            if created_at:
+                try:
+                    month_key = created_at[:7]  # YYYY-MM 형식
+                    monthly_stats[month_key] += 1
+                except:
+                    continue
 
-            # 주요 감정 카운트
-            primary_emotion = diary.get("primary_emotion", "중립")
-            emotion_counts[primary_emotion] = emotion_counts.get(primary_emotion, 0) + 1
+        # 향수 브랜드별 통계
+        brand_count = {}
+        for diary in diary_data:
+            brand = diary.get("brand", "Unknown")
+            brand_count[brand] = brand_count.get(brand, 0) + 1
 
-        # 태그 빈도 계산
-        tag_counter = Counter(all_tags)
+        popular_brands = sorted(brand_count.items(), key=lambda x: x[1], reverse=True)[:5]
 
-        return JSONResponse(
-            status_code=200,
-            content={
-                "message": "감정 태그 사용 통계",
-                "total_diaries": len(diary_data),
-                "most_used_tags": dict(tag_counter.most_common(10)),
-                "emotion_distribution": emotion_counts,
-                "tag_stats": {
-                    "total_unique_tags": len(tag_counter),
-                    "total_tag_usage": sum(tag_counter.values()),
-                    "average_tags_per_diary": round(sum(tag_counter.values()) / max(len(diary_data), 1), 2)
-                }
+        return {
+            "message": "일기 통계 조회 성공",
+            "user_id": user_id,
+            "stats": {
+                "total_diaries": total_diaries,
+                "public_diaries": public_diaries,
+                "public_ratio": round(public_diaries / total_diaries * 100, 1) if total_diaries > 0 else 0,
+                "emotion_distribution": emotion_count,
+                "average_rating": round(average_rating, 2),
+                "popular_tags": popular_tags,
+                "monthly_stats": dict(monthly_stats),
+                "popular_brands": popular_brands,
+                "has_images": len([d for d in diary_data if d.get("image_path")]),
+                "analysis_success_rate": len([d for d in diary_data if d.get(
+                    "emotion_analysis_status") == "completed"]) / total_diaries * 100 if total_diaries > 0 else 0
             }
-        )
+        }
 
     except Exception as e:
-        logger.error(f"❌ 감정 태그 통계 조회 오류: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"message": f"감정 태그 통계 조회 실패: {str(e)}"}
-        )
+        logger.error(f"❌ 통계 조회 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"통계 조회 중 오류: {str(e)}")
+
+
+@router.get("/emotions/analysis", summary="감정 분석 결과 조회")
+async def get_emotion_analysis_results(
+        user_id: Optional[str] = Query(None, description="특정 사용자"),
+        emotion: Optional[str] = Query(None, description="특정 감정 필터"),
+        limit: Optional[int] = Query(20, description="결과 개수 제한"),
+        user=Depends(verify_firebase_token_optional)
+):
+    """
+    감정 분석 결과 조회
+
+    - 사용자별 감정 패턴 분석
+    - 특정 감정의 일기 목록
+    - 감정 변화 추이 분석
+    """
+    try:
+        diary_data = load_diary_data()
+
+        # 사용자 필터링
+        if user_id:
+            diary_data = [d for d in diary_data if d.get("user_id") == user_id]
+
+        # 감정 필터링
+        if emotion:
+            diary_data = [d for d in diary_data
+                          if emotion.lower() in d.get("primary_emotion", "").lower()]
+
+        # 최근 순으로 정렬 및 개수 제한
+        diary_data.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        diary_data = diary_data[:limit]
+
+        # 감정 분석 결과 구성
+        results = []
+        for diary in diary_data:
+            analysis = diary.get("emotion_analysis", {})
+
+            results.append({
+                "diary_id": diary.get("id"),
+                "perfume_name": diary.get("perfume_name"),
+                "created_at": diary.get("created_at"),
+                "primary_emotion": diary.get("primary_emotion"),
+                "confidence": diary.get("emotion_confidence", 0),
+                "analysis_status": diary.get("emotion_analysis_status"),
+                "analysis_method": diary.get("analysis_method"),
+                "auto_tags": diary.get("emotion_tags_auto", []),
+                "manual_tags": [tag for tag in diary.get("emotion_tags", [])
+                                if tag not in diary.get("emotion_tags_auto", [])],
+                "content_preview": diary.get("content", "")[:100] + "..." if len(
+                    diary.get("content", "")) > 100 else diary.get("content", ""),
+                "context_detected": analysis.get("context_detected", {}),
+                "perfume_type": analysis.get("perfume_type", "기타")
+            })
+
+        # 전체 감정 분포 계산
+        all_diary_data = load_diary_data()
+        if user_id:
+            all_diary_data = [d for d in all_diary_data if d.get("user_id") == user_id]
+
+        emotion_distribution = {}
+        for diary in all_diary_data:
+            emotion = diary.get("primary_emotion", "중립")
+            emotion_distribution[emotion] = emotion_distribution.get(emotion, 0) + 1
+
+        return {
+            "message": "감정 분석 결과 조회 성공",
+            "user_id": user_id,
+            "emotion_filter": emotion,
+            "results": results,
+            "total_analyzed": len(results),
+            "emotion_distribution": emotion_distribution,
+            "analysis_summary": {
+                "successful_analysis": len([r for r in results if r["analysis_status"] == "completed"]),
+                "failed_analysis": len([r for r in results if r["analysis_status"] == "failed"]),
+                "average_confidence": sum([r["confidence"] for r in results]) / len(results) if results else 0
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"❌ 감정 분석 결과 조회 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"감정 분석 결과 조회 중 오류: {str(e)}")
+
+
+@router.post("/{diary_id}/like", summary="일기 좋아요")
+async def like_diary(
+        diary_id: str,
+        user=Depends(verify_firebase_token_optional)
+):
+    """
+    일기 좋아요 토글
+
+    - 좋아요 추가/제거
+    - 중복 좋아요 방지
+    - 실시간 카운트 업데이트
+    """
+    try:
+        # 일기 존재 확인
+        diary = get_diary_by_id(diary_id)
+        if not diary:
+            raise HTTPException(status_code=404, detail="일기를 찾을 수 없습니다.")
+
+        # 사용자 정보
+        user_id = user.get("uid") if user else "anonymous"
+
+        # 좋아요 정보 처리 (간단한 구현)
+        current_likes = diary.get("likes", 0)
+        liked_users = diary.get("liked_users", [])
+
+        if user_id in liked_users:
+            # 좋아요 취소
+            liked_users.remove(user_id)
+            new_likes = max(0, current_likes - 1)
+            action = "unliked"
+        else:
+            # 좋아요 추가
+            liked_users.append(user_id)
+            new_likes = current_likes + 1
+            action = "liked"
+
+        # 업데이트
+        update_data = {
+            "likes": new_likes,
+            "liked_users": liked_users
+        }
+
+        if update_diary_by_id(diary_id, update_data):
+            return {
+                "message": f"일기 {action} 성공",
+                "diary_id": diary_id,
+                "action": action,
+                "new_likes_count": new_likes,
+                "user_id": user_id
+            }
+        else:
+            raise HTTPException(status_code=500, detail="좋아요 처리에 실패했습니다.")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 좋아요 처리 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"좋아요 처리 중 오류: {str(e)}")
+
+
+@router.get("/search", summary="일기 검색")
+async def search_diaries(
+        q: str = Query(..., description="검색어"),
+        search_type: str = Query("all", description="검색 타입 (all, content, perfume, tags)"),
+        page: int = Query(1, description="페이지 번호"),
+        size: int = Query(10, description="페이지 크기"),
+        user=Depends(verify_firebase_token_optional)
+):
+    """
+    일기 검색
+
+    - 내용, 향수명, 태그별 검색
+    - 통합 검색 및 필터링
+    - 검색 결과 하이라이팅
+    """
+    try:
+        diary_data = load_diary_data()
+
+        # 공개 일기만 검색 (비로그인 시) 또는 본인 일기 포함 (로그인 시)
+        if user:
+            user_id = user.get("uid")
+            # 공개 일기 + 본인 일기
+            searchable_data = [d for d in diary_data
+                               if d.get("is_public", False) or d.get("user_id") == user_id]
+        else:
+            # 공개 일기만
+            searchable_data = [d for d in diary_data if d.get("is_public", False)]
+
+        # 검색 실행
+        search_results = []
+        search_term = q.lower()
+
+        for diary in searchable_data:
+            match_score = 0
+            match_fields = []
+
+            # 검색 타입별 매칭
+            if search_type in ["all", "content"]:
+                content = diary.get("content", "").lower()
+                if search_term in content:
+                    match_score += 3
+                    match_fields.append("content")
+
+            if search_type in ["all", "perfume"]:
+                perfume_name = diary.get("perfume_name", "").lower()
+                if search_term in perfume_name:
+                    match_score += 5
+                    match_fields.append("perfume")
+
+            if search_type in ["all", "tags"]:
+                tags = [tag.lower() for tag in diary.get("emotion_tags", [])]
+                if any(search_term in tag for tag in tags):
+                    match_score += 2
+                    match_fields.append("tags")
+
+            # 추가 검색 필드
+            if search_type == "all":
+                # 감정, 브랜드, 위치 등에서도 검색
+                if search_term in diary.get("primary_emotion", "").lower():
+                    match_score += 1
+                    match_fields.append("emotion")
+
+                if search_term in diary.get("brand", "").lower():
+                    match_score += 2
+                    match_fields.append("brand")
+
+                if search_term in diary.get("location", "").lower():
+                    match_score += 1
+                    match_fields.append("location")
+
+            # 매칭된 결과 추가
+            if match_score > 0:
+                search_results.append({
+                    "diary": diary,
+                    "match_score": match_score,
+                    "match_fields": match_fields
+                })
+
+        # 점수 순 정렬
+        search_results.sort(key=lambda x: x["match_score"], reverse=True)
+
+        # 페이징
+        total_count = len(search_results)
+        start_idx = (page - 1) * size
+        end_idx = start_idx + size
+        paginated_results = search_results[start_idx:end_idx]
+
+        # 응답 데이터 구성
+        response_data = []
+        for result in paginated_results:
+            diary = result["diary"]
+            response_data.append({
+                "id": diary.get("id"),
+                "user_id": diary.get("user_id"),
+                "user_name": diary.get("user_name"),
+                "perfume_name": diary.get("perfume_name"),
+                "content": diary.get("content", "")[:200] + "..." if len(diary.get("content", "")) > 200 else diary.get(
+                    "content", ""),
+                "emotion_tags": diary.get("emotion_tags", []),
+                "primary_emotion": diary.get("primary_emotion"),
+                "rating": diary.get("rating"),
+                "likes": diary.get("likes", 0),
+                "created_at": diary.get("created_at"),
+                "match_score": result["match_score"],
+                "match_fields": result["match_fields"]
+            })
+
+        return {
+            "message": "검색 완료",
+            "query": q,
+            "search_type": search_type,
+            "results": response_data,
+            "pagination": {
+                "page": page,
+                "size": size,
+                "total": total_count,
+                "total_pages": (total_count + size - 1) // size,
+                "has_next": end_idx < total_count,
+                "has_prev": page > 1
+            },
+            "search_summary": {
+                "total_found": total_count,
+                "avg_match_score": sum([r["match_score"] for r in search_results]) / len(
+                    search_results) if search_results else 0,
+                "search_in_public_only": user is None
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"❌ 일기 검색 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"일기 검색 중 오류: {str(e)}")
+
+
+# ─── 관리자 전용 API ─────────────────────────────────────────────────────────────
+
+@router.get("/admin/all", summary="전체 일기 관리 (관리자)")
+async def admin_get_all_diaries(
+        include_private: bool = Query(False, description="비공개 일기 포함"),
+        user=Depends(verify_firebase_token_optional)
+):
+    """
+    관리자 전용: 전체 일기 조회
+
+    - 모든 사용자 일기 조회
+    - 비공개 일기 포함 옵션
+    - 상세 통계 정보
+    """
+    try:
+        # 관리자 권한 확인
+        if not user or not user.get("email", "").endswith("@admin.whiff.com"):
+            raise HTTPException(status_code=403, detail="관리자 권한이 필요합니다.")
+
+        diary_data = load_diary_data()
+
+        # 비공개 일기 필터링
+        if not include_private:
+            diary_data = [d for d in diary_data if d.get("is_public", False)]
+
+        # 상세 통계 계산
+        stats = {
+            "total_diaries": len(diary_data),
+            "public_diaries": len([d for d in diary_data if d.get("is_public", False)]),
+            "users_count": len(set([d.get("user_id") for d in diary_data])),
+            "with_images": len([d for d in diary_data if d.get("image_path")]),
+            "analysis_completed": len([d for d in diary_data if d.get("emotion_analysis_status") == "completed"]),
+            "average_rating": sum([d.get("rating", 0) for d in diary_data if d.get("rating")]) / len(
+                [d for d in diary_data if d.get("rating")]) if [d for d in diary_data if d.get("rating")] else 0
+        }
+
+        return {
+            "message": "관리자 일기 조회 성공",
+            "admin_user": user.get("email"),
+            "data": diary_data,
+            "stats": stats,
+            "include_private": include_private
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 관리자 일기 조회 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"관리자 일기 조회 중 오류: {str(e)}")
+
+
+@router.delete("/admin/cleanup", summary="데이터 정리 (관리자)")
+async def admin_cleanup_data(
+        remove_failed_analysis: bool = Query(False, description="분석 실패 일기 삭제"),
+        remove_empty_content: bool = Query(False, description="내용 없는 일기 삭제"),
+        remove_old_days: Optional[int] = Query(None, description="N일 이전 일기 삭제"),
+        user=Depends(verify_firebase_token_optional)
+):
+    """
+    관리자 전용: 데이터 정리
+
+    - 분석 실패 일기 정리
+    - 빈 내용 일기 정리
+    - 오래된 일기 정리
+    """
+    try:
+        # 관리자 권한 확인
+        if not user or not user.get("email", "").endswith("@admin.whiff.com"):
+            raise HTTPException(status_code=403, detail="관리자 권한이 필요합니다.")
+
+        diary_data = load_diary_data()
+        original_count = len(diary_data)
+        cleanup_stats = {
+            "failed_analysis_removed": 0,
+            "empty_content_removed": 0,
+            "old_diaries_removed": 0
+        }
+
+        # 정리 작업 실행
+        cleaned_data = diary_data.copy()
+
+        # 1. 분석 실패 일기 제거
+        if remove_failed_analysis:
+            before_count = len(cleaned_data)
+            cleaned_data = [d for d in cleaned_data
+                            if d.get("emotion_analysis_status") != "failed"]
+            cleanup_stats["failed_analysis_removed"] = before_count - len(cleaned_data)
+
+        # 2. 빈 내용 일기 제거
+        if remove_empty_content:
+            before_count = len(cleaned_data)
+            cleaned_data = [d for d in cleaned_data
+                            if d.get("content", "").strip()]
+            cleanup_stats["empty_content_removed"] = before_count - len(cleaned_data)
+
+        # 3. 오래된 일기 제거
+        if remove_old_days:
+            from datetime import datetime, timedelta
+            cutoff_date = (datetime.now() - timedelta(days=remove_old_days)).isoformat()
+            before_count = len(cleaned_data)
+            cleaned_data = [d for d in cleaned_data
+                            if d.get("created_at", "") > cutoff_date]
+            cleanup_stats["old_diaries_removed"] = before_count - len(cleaned_data)
+
+        # 정리 결과 저장
+        total_removed = original_count - len(cleaned_data)
+
+        if total_removed > 0:
+            save_diary_data(cleaned_data)
+
+        return {
+            "message": f"데이터 정리 완료: {total_removed}개 일기 제거",
+            "admin_user": user.get("email"),
+            "original_count": original_count,
+            "final_count": len(cleaned_data),
+            "cleanup_stats": cleanup_stats
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 관리자 데이터 정리 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"관리자 데이터 정리 중 오류: {str(e)}")
+
+
+# ─── 헬스체크 및 상태 확인 ───────────────────────────────────────────────────────
+
+@router.get("/health", summary="시향 일기 모듈 상태 확인")
+async def health_check():
+    """
+    시향 일기 모듈 헬스체크
+
+    - 데이터 파일 상태
+    - 감정 분석 모듈 상태
+    - 이미지 업로드 디렉토리 상태
+    """
+    try:
+        health_status = {
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "modules": {}
+        }
+
+        # 데이터 파일 상태 확인
+        try:
+            diary_data = load_diary_data()
+            health_status["modules"]["data_file"] = {
+                "status": "ok",
+                "diary_count": len(diary_data),
+                "file_exists": DIARY_DATA_PATH.exists()
+            }
+        except Exception as e:
+            health_status["modules"]["data_file"] = {
+                "status": "error",
+                "error": str(e)
+            }
+            health_status["status"] = "degraded"
+
+        # 감정 분석 모듈 상태 확인
+        try:
+            test_analysis = await process_emotion_analysis("테스트 내용입니다", "테스트 향수")
+            health_status["modules"]["emotion_analysis"] = {
+                "status": "ok",
+                "test_result": test_analysis.get("success", False)
+            }
+        except Exception as e:
+            health_status["modules"]["emotion_analysis"] = {
+                "status": "error",
+                "error": str(e)
+            }
+            health_status["status"] = "degraded"
+
+        # 이미지 디렉토리 상태 확인
+        health_status["modules"]["image_storage"] = {
+            "status": "ok" if DIARY_IMAGES_DIR.exists() else "warning",
+            "directory_exists": DIARY_IMAGES_DIR.exists(),
+            "writable": os.access(DIARY_IMAGES_DIR, os.W_OK) if DIARY_IMAGES_DIR.exists() else False
+        }
+
+        return health_status
+
+    except Exception as e:
+        logger.error(f"❌ 헬스체크 오류: {e}")
+        return {
+            "status": "error",
+            "timestamp": datetime.now().isoformat(),
+            "error": str(e)
+        }
