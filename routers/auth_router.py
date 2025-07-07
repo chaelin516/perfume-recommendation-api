@@ -1,4 +1,4 @@
-# routers/auth_router.py - 구글 로그인 원래대로 유지, JWT는 별도 API
+# routers/auth_router.py - Apple 로그인 추가된 완전 버전
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
@@ -10,6 +10,7 @@ from firebase_admin import auth
 import logging
 import os
 from datetime import datetime
+from typing import Optional
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -17,7 +18,7 @@ router = APIRouter(prefix="/auth", tags=["Auth"])
 logger = logging.getLogger(__name__)
 
 
-# ✅ 요청/응답 스키마 (기존 유지)
+# ✅ 요청/응답 스키마 (기존 + Apple 추가)
 class EmailPasswordRegister(BaseModel):
     email: EmailStr = Field(..., description="사용자 이메일 주소", example="user@example.com")
     password: str = Field(..., min_length=6, max_length=50, description="비밀번호 (최소 6자)", example="password123")
@@ -45,6 +46,25 @@ class GoogleLoginRequest(BaseModel):
     id_token: str = Field(..., description="Google ID 토큰")
 
 
+# 🍎 Apple 로그인 요청 모델 (새로 추가)
+class AppleLoginRequest(BaseModel):
+    id_token: str = Field(..., description="iOS에서 Apple Sign In으로 받은 ID Token")
+    user_info: Optional[dict] = Field(None, description="첫 로그인 시에만 iOS에서 제공되는 사용자 정보")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "id_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+                "user_info": {
+                    "name": {
+                        "firstName": "홍",
+                        "lastName": "길동"
+                    }
+                }
+            }
+        }
+
+
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr = Field(..., description="비밀번호 재설정할 이메일")
 
@@ -66,11 +86,13 @@ class RegisterResponse(BaseModel):
 # ─── JWT 토큰 import ──────────────────────────────────────────────
 try:
     from utils.jwt_utils import create_access_token
+
     JWT_AVAILABLE = True
     logger.info("✅ JWT 유틸리티 로드 성공")
 except ImportError:
     JWT_AVAILABLE = False
     logger.warning("⚠️ JWT 유틸리티 없음 - JWT 토큰 발급 불가")
+
 
     def create_access_token(user_data):
         return None
@@ -155,7 +177,7 @@ async def google_login(request: GoogleLoginRequest):
         name = decoded_token.get("name")
         picture = decoded_token.get("picture")
 
-        await save_user(uid=uid, email=email, name=name, picture=picture)
+        await save_user(uid=uid, email=email, name=name, picture=picture, provider="google")
 
         # ★ 기존 응답 형태 그대로 유지 (JWT 토큰 없음) ★
         return JSONResponse(
@@ -169,6 +191,111 @@ async def google_login(request: GoogleLoginRequest):
     except Exception as e:
         logging.error(f"Google login error: {e}")
         raise HTTPException(status_code=500, detail="구글 로그인 중 오류가 발생했습니다.")
+
+
+# 🍎 Apple 로그인 (새로 추가)
+@router.post("/apple-login", summary="애플 로그인 (iOS 전용)")
+async def apple_login(request: AppleLoginRequest):
+    """
+    iOS 앱에서 Apple Sign In을 통해 받은 ID Token을 검증하고 사용자 로그인 처리
+    """
+    try:
+        logger.info(f"🍎 Apple 로그인 요청 시작")
+
+        # 1. Firebase에서 Apple ID Token 검증
+        try:
+            decoded_token = auth.verify_id_token(request.id_token)
+            logger.info(f"✅ Apple ID Token 검증 성공")
+        except auth.InvalidIdTokenError:
+            logger.error(f"❌ 유효하지 않은 Apple ID Token")
+            raise HTTPException(status_code=401, detail="유효하지 않은 Apple ID Token입니다.")
+        except Exception as e:
+            logger.error(f"❌ Apple ID Token 검증 실패: {e}")
+            raise HTTPException(status_code=401, detail="Apple 토큰 검증에 실패했습니다.")
+
+        # 2. Apple 사용자 정보 추출
+        uid = decoded_token["uid"]
+        email = decoded_token.get("email")
+        email_verified = decoded_token.get("email_verified", False)
+
+        # 3. 사용자 이름 처리 (첫 로그인 시에만 iOS에서 제공)
+        name = None
+        if request.user_info and request.user_info.get('name'):
+            name_info = request.user_info['name']
+            first_name = name_info.get('firstName', '').strip()
+            last_name = name_info.get('lastName', '').strip()
+            name = f"{first_name} {last_name}".strip() or None
+
+        # 4. Firebase에서 사용자 정보 확인/업데이트
+        try:
+            user_record = auth.get_user(uid)
+            logger.info(f"✅ 기존 사용자 확인: {user_record.email}")
+
+            # 이름이 없고 새로 제공된 경우 업데이트
+            if name and not user_record.display_name:
+                auth.update_user(uid, display_name=name)
+                logger.info(f"📝 사용자 이름 업데이트: {name}")
+
+        except auth.UserNotFoundError:
+            logger.error(f"❌ Firebase에서 사용자를 찾을 수 없음: {uid}")
+            raise HTTPException(status_code=404, detail="Apple 로그인 사용자를 찾을 수 없습니다.")
+
+        # 5. 사용자 정보 DB 저장 (기존 save_user 함수 활용)
+        await save_user(
+            uid=uid,
+            email=email,
+            name=name or user_record.display_name,
+            provider='apple'
+        )
+        logger.info(f"💾 사용자 정보 DB 저장 완료")
+
+        # 6. 응답 반환
+        return JSONResponse(
+            content={
+                "message": "Apple 로그인이 완료되었습니다.",
+                "user": {
+                    "uid": uid,
+                    "email": email,
+                    "name": name or user_record.display_name,
+                    "provider": "apple",
+                    "email_verified": email_verified
+                },
+                "success": True
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Apple 로그인 처리 중 오류: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Apple 로그인 처리 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
+# 🍎 iOS 개발자를 위한 Apple 설정 정보 API
+@router.get("/apple-config", summary="Apple 로그인 설정 정보")
+async def get_apple_config():
+    """iOS 개발자를 위한 Apple 로그인 설정 정보"""
+    return {
+        "apple_client_id": "com.sinhuiyeong.Whiff",
+        "firebase_project_id": "whiff-1cd2b",
+        "team_id": "8BJS54K55Z",
+        "required_scopes": ["name", "email"],
+        "backend_endpoint": "https://whiff-api-9nd8.onrender.com/auth/apple-login",
+        "instructions": {
+            "step1": "iOS 프로젝트에 AuthenticationServices.framework 추가",
+            "step2": "Firebase SDK 설정 및 Apple provider 구성",
+            "step3": "ASAuthorizationAppleIDButton 구현",
+            "step4": "Apple ID Token을 백엔드 API로 전송"
+        },
+        "ios_implementation": {
+            "bundle_id": "com.sinhuiyeong.Whiff",
+            "capability": "Sign In with Apple",
+            "firebase_config": "GoogleService-Info.plist 사용"
+        }
+    }
 
 
 # 🆕 이메일/비밀번호 회원가입 (JWT 토큰 발급)
